@@ -10,6 +10,8 @@ public class ToastForm : Form
 {
     private const int WS_EX_NOACTIVATE = 0x08000000;
     private const int WS_EX_TOOLWINDOW = 0x00000080;
+    private const int NOTIFY_DURATION_MS = 10000; // 显示时长 10 秒
+    private const int ENTER_DURATION_MS = 150;   // 渐入动画 150ms
 
     // ── 插件暗色主题调色板 ──
     private static readonly Color C_Bg       = Color.FromArgb(58, 50, 40);   // #3a3228
@@ -90,7 +92,7 @@ public class ToastForm : Form
         Location = new Point(_targetLocation.X + 60, _targetLocation.Y);
 
         Paint += OnPaint; Click += OnToastClick;
-        _closeTimer = new System.Windows.Forms.Timer { Interval = 6000 };
+        _closeTimer = new System.Windows.Forms.Timer { Interval = NOTIFY_DURATION_MS };
         _closeTimer.Tick += (_, _) => BeginClose();
         _closeTimer.Start();
 
@@ -99,7 +101,7 @@ public class ToastForm : Form
         enterTimer.Tick += (_, _) =>
         {
             var elapsed = (DateTime.UtcNow - enterStart).TotalMilliseconds;
-            var progress = Math.Min(1.0, elapsed / 300.0);
+            var progress = Math.Min(1.0, elapsed / ENTER_DURATION_MS);
             var eased = 1.0 - Math.Pow(1.0 - progress, 3.0);
             Location = new Point(_targetLocation.X + (int)(60 * (1.0 - eased)), _targetLocation.Y);
             Opacity = (float)Math.Min(1.0, progress * 1.5);

@@ -309,7 +309,7 @@ export default function (app, ctx) {
         }));
       } catch (e) {
         ctx.log?.warn?.("mail_sync.folders_fallback", { error: e.message });
-        folders = defaultFolders(accountId);
+        folders = _defaultFoldersFallback(accountId);
       }
 
       const messagesRaw = await runInbox(["list", account.email, `--fid=${folder}`, "--limit=50"]);

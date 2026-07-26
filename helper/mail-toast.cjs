@@ -76,14 +76,20 @@ else {
 
 // ── 方法 1: SnoreToast（原生 Windows Toast + 点击回调） ──
 function tryNotifyViaSnoreToast() {
-  const clickCmd = path.join(os.tmpdir(), `hanako-click-${toastId}.cmd`);
-  fs.writeFileSync(clickCmd,
-    `@echo off\r\n` +
-    `echo {"toastId":"${escapeJson(toastId)}","messageId":"${escapeJson(messageId)}","accountId":"${escapeJson(accountId)}"} > "${clickFile}"\r\n`,
-    "utf-8"
-  );
+  // 修复：原先把 messageId/sender 直接插值进 .cmd 批处理脚本，
+  // 1) SnoreToast 派生的 cmd 窗口可见，弹窗消失/点击时会闪一下控制台；
+  // 2) messageId 含 < > & | % 等元字符会导致 cmd 语法错误（红字一闪）。
+  // 现改为：数据写入独立的 sidecar JSON 文件（路径可信、无插值），
+  // 再用 wscript.exe 调用无窗口的 click.vbs 完成文件拷贝，彻底消除闪烁与报错。
+  const sidecar = path.join(os.tmpdir(), `hanako-click-args-${toastId}.json`);
+  fs.writeFileSync(sidecar, JSON.stringify({ toastId, messageId, accountId }), "utf-8");
+
+  const vbs = path.join(__dirname, "click.vbs");
+  // wscript 在 PATH 中，无需带空格的 exe 路径，减少对 SnoreToast 命令行解析的干扰
+  const clickCmd = `wscript.exe "${vbs}" "${sidecar}" "${clickFile}"`;
+
   const { execFile } = require("child_process");
-  const cp = execFile(snoreExe, [
+  execFile(snoreExe, [
     "-title", "Hanako Mail",
     "-message", `📩 ${subject}`,
     "-appID", "Hanako.Mail",
@@ -91,15 +97,18 @@ function tryNotifyViaSnoreToast() {
     "-click", clickCmd,
     "-close", clickCmd,
   ], { timeout: 15000, windowsHide: true }, (err) => {
-    try { fs.unlinkSync(clickCmd); } catch {}
+    try { fs.unlinkSync(sidecar); } catch {}
     if (err) {
       console.error("mail-toast: SnoreToast failed, trying node-notifier:", err.message);
+      // 不在回调里立即 process.exit，交给兜底逻辑自行退出，避免打断 node-notifier
       if (notifierDir) tryNotifyViaNodeNotifier();
+      else process.exit(1);
+    } else {
+      process.exit(0);
     }
-    process.exit(0);
   });
-  // 超时退出
-  setTimeout(() => process.exit(0), 10000);
+  // 超时兜底（留出 node-notifier 兜底的余量）
+  setTimeout(() => process.exit(0), 15000);
 }
 
 // ── 方法 2: node-notifier（降级） ──
@@ -123,8 +132,4 @@ function tryNotifyViaNodeNotifier() {
     console.error("mail-toast: node-notifier failed:", e.message);
     process.exit(1);
   }
-}
-
-function escapeJson(s) {
-  return String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n");
 }
