@@ -15,11 +15,15 @@ Hana 原生多邮箱聚合插件：IMAP/SMTP + 官方 API，支持多账号、�
 
 ```bash
 git clone https://github.com/openhanako-labs/Openhanako-mail.git
-cd Openhanako-mail/backend
-npm install
+cd Openhanako-mail
 ```
 
-然后在 Hana 中 dev 加载或打包为正式插件使用。
+在 Hana 中 dev 加载即可。
+
+**注意：**
+- 插件本体可直接加载，无需 `npm install`
+- ClawEmail（163）后端需要 `cd backend && npm install` 安装 `@clawemail/node-sdk`
+- AgentQQ（QQ）后端依赖本地 `agently-cli`，需单独安装
 
 ## 配置
 
