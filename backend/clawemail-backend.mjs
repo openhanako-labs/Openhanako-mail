@@ -158,29 +158,17 @@ export async function searchMessages(keyword, options = {}) {
 }
 
 export async function listFolders() {
-  return new Promise((resolve, reject) => {
-    const proc = spawn("mail-cli.cmd folder list", {
-      encoding: "utf-8",
-      timeout: 10000,
-      windowsHide: true,
-      shell: true,
-    });
-    let stdout = "";
-    proc.stdout.on("data", (chunk) => { stdout += chunk; });
-    proc.on("close", (code) => {
-      if (code !== 0) return reject(new Error(`mail-cli folder list failed`));
-      const lines = stdout.split("\n").filter(l => l.trim());
-      const folders = lines.map(line => {
-        const match = line.match(/^(\d+)\s+(.+?)(?:\s+unread=(\d+))?$/);
-        if (match) {
-          return { id: match[1], name: match[2], unread: parseInt(match[3] || "0") };
-        }
-        return { raw: line };
-      });
-      resolve(folders);
-    });
-    proc.on("error", reject);
-  });
+  try {
+    const result = await runMailCli(["folder", "list"], 10000);
+    const data = Array.isArray(result?.data) ? result.data : [];
+    return data.map(f => ({
+      id: String(f.id || ""),
+      name: String(f.name || f.raw || ""),
+      unread: Number(f.unreadCount || f.unread || 0),
+    }));
+  } catch (e) {
+    throw new Error(`mail-cli folder list failed: ${e.message}`);
+  }
 }
 
 // ── 读取邮件（用 SDK） ─────────────────────────────────
