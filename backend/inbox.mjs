@@ -30,6 +30,7 @@ import * as imap from "./imap-backend.mjs";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, "data");
 const PENDING_SEND_DIR = path.join(DATA_DIR, "_pending_send");
+const TEMP_DIR = path.join(DATA_DIR, "_imap_tmp");
 const ENV_PATH = path.join(__dirname, ".env");
 
 // ── 加载 .env（兜底） ──────────────────────────────────
@@ -186,7 +187,7 @@ export async function downloadAttachment(accountEmail, messageId, partId, output
     return await clawemail.downloadAttachment(config.apiKey, accountEmail, messageId, partId, outputDir);
   }
   if (config.backend === "imap") {
-    throw new Error("downloadAttachment: IMAP backend attachment download not yet implemented");
+    return await imap.downloadAttachment(accountEmail, messageId, partId, outputDir);
   }
   return await agentqq.downloadAttachment(messageId, partId, outputDir);
 }
@@ -203,7 +204,18 @@ export async function getAttachmentData(accountEmail, messageId, partId) {
     };
   }
   if (config.backend === "imap") {
-    throw new Error("getAttachmentData: IMAP backend attachment serving not yet implemented");
+    // 对于 IMAP 后端，下载到临时目录后返回 base64
+    const tmpDir = path.join(TEMP_DIR, String(Date.now()));
+    const result = await imap.downloadAttachment(accountEmail, messageId, partId, tmpDir);
+    const buf = await fs.promises.readFile(result.path);
+    // 清理临时文件
+    fs.promises.rm(tmpDir, { recursive: true }).catch(() => {});
+    return {
+      filename: result.filename,
+      contentType: result.contentType,
+      size: result.size,
+      base64: buf.toString("base64"),
+    };
   }
   throw new Error("getAttachmentData: AgentQQ backend does not support attachment serving yet");
 }
@@ -272,7 +284,7 @@ export async function forward(accountEmail, messageId, options = {}) {
   if (config.backend === "clawemail") {
     throw new Error("forward: ClawEmail backend does not support forward. Use reply or send instead.");
   } else if (config.backend === "imap") {
-    throw new Error("forward: IMAP backend does not support forward yet");
+    result = await imap.forwardMail(accountEmail, messageId, options);
   } else {
     result = await agentqq.forwardMail(messageId, options);
   }

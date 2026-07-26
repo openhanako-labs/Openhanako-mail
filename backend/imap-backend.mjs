@@ -145,7 +145,6 @@ function fetchMessages(imap, uids, options = { bodies: "" }) {
         });
       });
       msg.on("attributes", (attrs) => {
-        // 在最后一条消息的 attributes 回调中补上 uid
         if (messages.length > 0) {
           messages[messages.length - 1].uid = attrs.uid;
           messages[messages.length - 1].flags = attrs.flags;
@@ -207,7 +206,6 @@ export async function listMessages(email, options = {}) {
   try {
     await openBox(imap, folder);
     const uids = await searchMessages(imap, ["ALL"]);
-    // 取最新的 N 条
     const recent = uids.slice(Math.max(0, uids.length - Math.max(limit, 50)));
     const rawMessages = await fetchMessages(imap, recent);
     const parsed = await parseMessages(rawMessages);
@@ -256,7 +254,6 @@ export async function sendMail(email, options) {
 }
 
 export async function replyToMail(email, messageId, options = {}) {
-  // 读取原邮件
   const original = await readMessage(email, messageId);
   if (!original || original.error) throw new Error(`reply: original message not found (${messageId})`);
 
@@ -278,6 +275,85 @@ export async function replyToMail(email, messageId, options = {}) {
   const info = await transporter.sendMail(mailOptions);
   transporter.close();
   return { messageId: info.messageId };
+}
+
+export async function downloadAttachment(email, messageId, partId, outputDir) {
+  if (!outputDir) throw new Error("downloadAttachment: 'outputDir' is required");
+  const config = getImapConfig(email);
+  const imap = await connectImap(config);
+  try {
+    await openBox(imap, "INBOX");
+    const uid = parseInt(messageId, 10);
+    if (isNaN(uid)) throw new Error(`invalid messageId: ${messageId}`);
+
+    const rawMessages = await fetchMessages(imap, [uid], { bodies: "" });
+    if (rawMessages.length === 0) throw new Error("message not found");
+
+    const parsed = await parseMessages(rawMessages);
+    const message = parsed[0];
+    if (!message || message.error) throw new Error(`parse failed: ${message?.error || "unknown"}`);
+
+    const idx = parseInt(partId, 10);
+    if (isNaN(idx) || idx < 0 || idx >= message.attachments.length) {
+      throw new Error(`attachment not found: ${partId}`);
+    }
+
+    const full = await simpleParser(rawMessages[0].raw);
+    const att = full.attachments[idx];
+    if (!att) throw new Error(`attachment not found: ${partId}`);
+
+    await fs.mkdir(outputDir, { recursive: true });
+    const safeName = path.basename(att.filename || `attachment_${idx}`);
+    const outPath = path.join(outputDir, safeName);
+    await fs.writeFile(outPath, att.content);
+
+    return {
+      filename: safeName,
+      contentType: att.contentType || "application/octet-stream",
+      size: att.size || att.content.length,
+      path: outPath,
+    };
+  } finally {
+    closeImap(imap);
+  }
+}
+
+export async function forwardMail(email, messageId, options = {}) {
+  const { to, subject, body, html = false, includeOriginal = true } = options;
+  if (!to) throw new Error("forwardMail: 'to' is required");
+
+  const original = await readMessage(email, messageId);
+  if (!original || original.error) throw new Error(`forward: original message not found (${messageId})`);
+
+  const smtpConfig = getSmtpConfig(email);
+  const transporter = nodemailer.createTransport(smtpConfig);
+
+  const finalSubject = subject || (original.subject ? `Fwd: ${original.subject}` : "Fwd:");
+
+  let forwardBody = body || "";
+  if (includeOriginal) {
+    const quoted = [
+      "",
+      "---------- 转发的邮件 ----------",
+      `发件人: ${original.from || ""}`,
+      `收件人: ${original.to || ""}`,
+      `主题: ${original.subject || ""}`,
+      "",
+      original.text || "",
+    ].join("\n");
+    forwardBody = body ? `${body}\n${quoted}` : quoted;
+  }
+
+  const mailOptions = {
+    from: email,
+    to: Array.isArray(to) ? to.join(", ") : to,
+    subject: finalSubject,
+    [html ? "html" : "text"]: forwardBody,
+  };
+
+  const info = await transporter.sendMail(mailOptions);
+  transporter.close();
+  return { messageId: info.messageId, accepted: info.accepted, rejected: info.rejected };
 }
 
 export async function listFolders(email) {
