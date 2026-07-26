@@ -35,6 +35,23 @@ function resolveAccount(ctx, accountId) {
   return account;
 }
 
+function readWsCache(ctx, accountId) {
+  const cacheDir = path.join(ctx.dataDir, ctx.pluginId, "cache");
+  const files = [];
+  try {
+    const entries = fs.readdirSync(cacheDir);
+    for (const f of entries) {
+      if (f.startsWith(`ws-${accountId}-`) && f.endsWith(".json")) {
+        try {
+          const content = JSON.parse(fs.readFileSync(path.join(cacheDir, f), "utf-8"));
+          files.push(content);
+        } catch {}
+      }
+    }
+  } catch {}
+  return files;
+}
+
 export const name = "mail_sync";
 export const description = "同步邮箱文件夹";
 
@@ -69,8 +86,27 @@ export async function execute(input, ctx) {
       folders = defaultFolders(accountId);
     }
 
-    const messagesRaw = await runInbox(["list", account.email, `--fid=${folder}`, "--limit=50"], extraEnv);
-    const messages = Array.isArray(messagesRaw) ? messagesRaw : [];
+    let messagesRaw = [];
+    try {
+      messagesRaw = await runInbox(["list", account.email, `--fid=${folder}`, "--limit=50"], extraEnv);
+    } catch (e) {
+      ctx.log?.warn?.("mail_sync.list_fallback", { error: e.message });
+    }
+    let messages = Array.isArray(messagesRaw) ? messagesRaw : [];
+
+    // 合并 WebSocket 实时缓存（ClawEmail 账号）
+    if (account.email.endsWith("@claw.163.com")) {
+      const wsMails = readWsCache(ctx, accountId);
+      if (wsMails.length) {
+        const byId = new Map(messages.map(m => [m.id, m]));
+        for (const m of wsMails) {
+          if (!byId.has(m.id)) {
+            byId.set(m.id, m);
+          }
+        }
+        messages = Array.from(byId.values()).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+      }
+    }
 
     fs.writeFileSync(path.join(dataDir, `folders-${accountId}.json`), JSON.stringify(folders, null, 2), "utf-8");
     fs.writeFileSync(path.join(dataDir, `messages-${accountId}-${folder}.json`), JSON.stringify(messages, null, 2), "utf-8");

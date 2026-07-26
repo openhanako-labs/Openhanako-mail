@@ -6,6 +6,7 @@ import { execFile, spawn } from "node:child_process";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BACKEND_DIR = path.join(__dirname, "backend");
 const DATA_DIR = path.join(BACKEND_DIR, "data");
+const WS_MONITOR_PATH = path.join(BACKEND_DIR, "ws-monitor.mjs");
 
 function checkDeps() {
   const missing = [];
@@ -74,6 +75,34 @@ function autoInstallDeps() {
   });
 }
 
+let wsMonitorProc = null;
+function startWsMonitor() {
+  if (wsMonitorProc) return; // 已在运行
+  try {
+    const proc = spawn(process.execPath, [WS_MONITOR_PATH], {
+      cwd: BACKEND_DIR,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: true,
+    });
+    wsMonitorProc = proc;
+    proc.stdout?.on("data", (d) => console.log("[ws-monitor]", d.toString().trim()));
+    proc.stderr?.on("data", (d) => console.warn("[ws-monitor]", d.toString().trim()));
+    proc.on("close", (code) => {
+      wsMonitorProc = null;
+      console.warn(`[ws-monitor] 退出: ${code}，10秒后重启...`);
+      setTimeout(startWsMonitor, 10000);
+    });
+    proc.on("error", (e) => {
+      wsMonitorProc = null;
+      console.warn("[ws-monitor] 启动失败", { error: e.message });
+      setTimeout(startWsMonitor, 30000);
+    });
+  } catch (e) {
+    console.warn("[ws-monitor] 无法启动", { error: e.message });
+  }
+}
+
 export default class HanakoMailPlugin {
   async onload() {
     const ctx = this.ctx;
@@ -85,6 +114,9 @@ export default class HanakoMailPlugin {
       ctx.log?.warn?.("hanako-mail: 后端依赖缺失，尝试自动安装", { missing });
       autoInstallDeps();
     }
+
+    // 启动 WebSocket 实时收件监听
+    startWsMonitor();
   }
 
   async onunload() {
