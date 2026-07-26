@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BACKEND_DIR = path.join(__dirname, "backend");
@@ -42,7 +42,7 @@ function autoInstallDeps() {
   });
 
   // 用 spawn 后台跑 npm install
-  const proc = require("node:child_process").spawn("npm", ["install"], {
+  const proc = spawn("npm", ["install"], {
     cwd: BACKEND_DIR,
     windowsHide: true,
     stdio: "ignore",
