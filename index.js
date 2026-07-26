@@ -31,13 +31,17 @@ function ensureDataDir() {
   try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
 }
 
+let autoInstallCooldown = false;
 function autoInstallDeps() {
+  if (autoInstallCooldown) return;
+
   const lockFile = path.join(DATA_DIR, ".hanako-auto-install.lock");
   if (fs.existsSync(lockFile)) return; // 已在安装中或已安装过
 
   const missing = checkDeps();
   if (missing.length === 0) return;
 
+  autoInstallCooldown = true;
   fs.writeFileSync(lockFile, Date.now().toString());
 
   // 用 spawn 后台跑 npm install（Windows 需要 shell: true 才能找到 npm.cmd）
@@ -54,6 +58,7 @@ function autoInstallDeps() {
   proc.stderr?.on("data", (d) => { stderr += d.toString(); });
 
   proc.on("close", (code) => {
+    autoInstallCooldown = false;
     try { fs.unlinkSync(lockFile); } catch {}
     if (code === 0) {
       console.log("[hanako-mail] 后端依赖自动安装成功");
@@ -63,6 +68,7 @@ function autoInstallDeps() {
   });
 
   proc.on("error", (e) => {
+    autoInstallCooldown = false;
     try { fs.unlinkSync(lockFile); } catch {}
     console.warn("[hanako-mail] 无法自动安装依赖", { error: e.message });
   });
