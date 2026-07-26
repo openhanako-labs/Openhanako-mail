@@ -311,6 +311,54 @@ export default function (app, ctx) {
     fs.writeFileSync(file, JSON.stringify(data, null, 2), "utf-8");
   }
 
+  function readWsCache(accountId) {
+    const files = [];
+    try {
+      const entries = fs.readdirSync(cacheDir);
+      const prefix = `ws-${accountId}-`;
+      for (const f of entries) {
+        if (f.startsWith(prefix) && f.endsWith(".json")) {
+          try {
+            const content = JSON.parse(fs.readFileSync(path.join(cacheDir, f), "utf-8"));
+            files.push({
+              ...content,
+              id: content.mailId || content.id || f,
+            });
+          } catch {}
+        }
+      }
+    } catch {}
+    return files;
+  }
+
+  function readEmailMonitorData(accountEmail) {
+    const base = path.join("W:\\", "Games", "Hanako", "Work", "projects", "email-monitor", "data");
+    const files = [];
+    try {
+      const entries = fs.readdirSync(base);
+      for (const entry of entries) {
+        const emailPath = path.join(base, entry, "email.json");
+        if (!fs.existsSync(emailPath)) continue;
+        try {
+          const content = JSON.parse(fs.readFileSync(emailPath, "utf-8"));
+          const toList = Array.isArray(content.to) ? content.to : [content.to || ""];
+          if (toList.some(t => t && t.includes(accountEmail))) {
+            files.push({
+              id: content.mailId || entry,
+              from: content.from && content.from[0] ? content.from[0] : "",
+              subject: content.subject || "(无主题)",
+              date: content.date || "",
+              size: 0,
+              read: true,
+              platform: "email-monitor",
+            });
+          }
+        } catch {}
+      }
+    } catch {}
+    return files;
+  }
+
   function accounts() {
     const raw = readJson(path.join(dataDir, "accounts.json"), []);
     return raw.map(decryptSensitiveFields);
@@ -424,6 +472,35 @@ export default function (app, ctx) {
 
       const messagesRaw = await runInbox(["list", account.email, `--fid=${folder}`, "--limit=50"], inboxEnvFor(account));
       const messages = Array.isArray(messagesRaw) ? messagesRaw : [];
+
+      // 合并 WebSocket 实时缓存（ClawEmail 账号）
+      if (account.email.endsWith("@claw.163.com")) {
+        const wsMails = readWsCache(accountId);
+        if (wsMails.length) {
+          const byId = new Map(messages.map(m => [m.id, m]));
+          for (const m of wsMails) {
+            if (!byId.has(m.id)) {
+              byId.set(m.id, m);
+            }
+          }
+          messages = Array.from(byId.values()).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+        }
+
+        // 如果 REST API 返回的还是旧数据，补充 email-monitor 本地存档
+        if (messages.length === 0 || (messages.length > 0 && messages[0].date && messages[0].date < "2026-07-01")) {
+          const monitorMails = readEmailMonitorData(account.email);
+          if (monitorMails.length) {
+            const byId = new Map(messages.map(m => [m.id, m]));
+            for (const m of monitorMails) {
+              if (!byId.has(m.id)) {
+                byId.set(m.id, m);
+              }
+            }
+            messages = Array.from(byId.values()).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+            ctx.log?.info?.("mail_sync.monitor_fallback", { count: monitorMails.length });
+          }
+        }
+      }
 
       // 摘要：复用上次缓存的，并行补抓前 N 条未缓存的
       const previousCache = readJson(path.join(cacheDir, `messages-${accountId}-${folder}.json`), []);

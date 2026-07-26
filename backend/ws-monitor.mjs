@@ -150,9 +150,6 @@ async function startAccount(account) {
       // 桌面通知
       notifyDesktop(subject, fromStr, mailId, accountId);
 
-      // 自动回复
-      await autoReply(client, account.email, mailId, email);
-
       log("INFO", "新邮件已缓存", { accountId, mailId, subject, from: fromStr });
     } catch (e) {
       log("ERROR", "处理邮件失败", { accountId, mailId, err: e.message });
