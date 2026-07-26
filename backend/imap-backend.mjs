@@ -417,3 +417,35 @@ export async function markRead(email, messageId, read = true) {
     closeImap(imap);
   }
 }
+
+export async function moveMessage(email, messageId, targetFid) {
+  const config = getImapConfig(email);
+  const imap = await connectImap(config);
+  try {
+    await openBox(imap, "INBOX");
+    const uid = parseInt(messageId, 10);
+    if (isNaN(uid)) throw new Error(`invalid messageId: ${messageId}`);
+
+    // 尝试使用 IMAP MOVE 命令（RFC 6851）
+    await new Promise((resolve, reject) => {
+      imap.move(uid, targetFid, (err) => {
+        if (err) {
+          // MOVE 不支持时 fallback 到 COPY + DELETE
+          imap.copy(uid, targetFid, (copyErr) => {
+            if (copyErr) return reject(copyErr);
+            imap.delFlags(uid, "\\Seen", (delErr) => {
+              if (delErr) return reject(delErr);
+              resolve();
+            });
+          });
+        } else {
+          resolve();
+        }
+      });
+    });
+
+    return { status: "moved", targetFid };
+  } finally {
+    closeImap(imap);
+  }
+}

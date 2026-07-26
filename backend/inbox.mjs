@@ -297,7 +297,7 @@ export async function moveMessage(accountEmail, messageId, targetFid) {
     return await clawemail.moveMessage(messageId, targetFid);
   }
   if (config.backend === "imap") {
-    throw new Error("moveMessage: IMAP backend move not implemented");
+    return await imap.moveMessage(accountEmail, messageId, targetFid);
   }
   throw new Error("moveMessage: AgentQQ backend move not implemented (CLI limitation)");
 }

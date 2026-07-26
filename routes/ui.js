@@ -3,9 +3,66 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
+import crypto from "node:crypto";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// ── 凭证明文 AES-256-GCM 加密 ────────────────────────
+// 密钥来源：固定盐 + 机器用户名，防止跨机器直接读取，但同一机器可解密。
+const CRYPTO_SALT = "hanako-mail-plugin-salt-v1";
+function getCryptoKey() {
+  const material = `${os.userInfo().username}-${CRYPTO_SALT}`;
+  return crypto.scryptSync(material, "hanako-mail-nonce", 32);
+}
+
+function encryptField(text) {
+  if (!text || typeof text !== "string") return text;
+  const key = getCryptoKey();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const enc = Buffer.concat([cipher.update(text, "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `ENC:${iv.toString("hex")}:${tag.toString("hex")}:${enc.toString("hex")}`;
+}
+
+function decryptField(token) {
+  if (!token || typeof token !== "string") return token;
+  if (!token.startsWith("ENC:")) return token;
+  const parts = token.slice(4).split(":");
+  if (parts.length !== 3) return token;
+  const [ivHex, tagHex, encHex] = parts;
+  const key = getCryptoKey();
+  const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(ivHex, "hex"));
+  decipher.setAuthTag(Buffer.from(tagHex, "hex"));
+  const dec = Buffer.concat([decipher.update(Buffer.from(encHex, "hex")), decipher.final()]);
+  return dec.toString("utf8");
+}
+
+function encryptSensitiveFields(account) {
+  const out = { ...account };
+  if (out.apiKey && typeof out.apiKey === "string") out.apiKey = encryptField(out.apiKey);
+  if (out.config && typeof out.config === "object") {
+    const cfg = { ...out.config };
+    if (cfg.imapPass && typeof cfg.imapPass === "string") cfg.imapPass = encryptField(cfg.imapPass);
+    if (cfg.smtpPass && typeof cfg.smtpPass === "string") cfg.smtpPass = encryptField(cfg.smtpPass);
+    out.config = cfg;
+  }
+  return out;
+}
+
+function decryptSensitiveFields(account) {
+  if (!account || typeof account !== "object") return account;
+  const out = { ...account };
+  if (out.apiKey && typeof out.apiKey === "string") out.apiKey = decryptField(out.apiKey);
+  if (out.config && typeof out.config === "object") {
+    const cfg = { ...out.config };
+    if (cfg.imapPass && typeof cfg.imapPass === "string") cfg.imapPass = decryptField(cfg.imapPass);
+    if (cfg.smtpPass && typeof cfg.smtpPass === "string") cfg.smtpPass = decryptField(cfg.smtpPass);
+    out.config = cfg;
+  }
+  return out;
+}
 
 // 兼容 dev 加载：如果 __dirname 指向源目录，尝试用插件上下文解析
 const DEVICES = new Set(["C", "D", "E", "W"]);
@@ -255,11 +312,13 @@ export default function (app, ctx) {
   }
 
   function accounts() {
-    return readJson(path.join(dataDir, "accounts.json"), []);
+    const raw = readJson(path.join(dataDir, "accounts.json"), []);
+    return raw.map(decryptSensitiveFields);
   }
 
   function saveAccounts(list) {
-    writeJson(path.join(dataDir, "accounts.json"), list);
+    const encrypted = list.map(encryptSensitiveFields);
+    writeJson(path.join(dataDir, "accounts.json"), encrypted);
   }
 
   app.get("/mail", (c) => {
