@@ -4,3 +4,11 @@ helper/node_modules/
 assets/plugin-page-template.html
 *.log
 .env
+
+# 项目文档（非运行必需）
+CONTEXT.md
+CURRENT.md
+DECISIONS.md
+PROJECT.md
+PROJECT_LOG.md
+STATUS.md
