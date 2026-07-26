@@ -7,9 +7,21 @@
  * 列表/搜索已迁移至 SDK transport（mail-cli 的 --fid 参数有 bug）
  */
 
-import { MailClient } from "@clawemail/node-sdk";
 import { spawn } from "node:child_process";
 import path from "node:path";
+
+let MailClient = null;
+async function loadMailClient() {
+  if (!MailClient) {
+    try {
+      const mod = await import("@clawemail/node-sdk");
+      MailClient = mod.MailClient;
+    } catch (e) {
+      throw new Error("@clawemail/node-sdk 未安装，请先执行: cd backend && npm install");
+    }
+  }
+  return MailClient;
+}
 
 // ── mail-cli 子进程封装（仅用于 move/mark） ────────────
 
@@ -55,10 +67,10 @@ function runMailCli(args, timeout = 15000) {
 // ── MailClient 工厂（带连接池，避免重复鉴权） ────────────
 const clientPool = new Map();
 
-function getClient(apiKey, user) {
+async function getClient(apiKey, user) {
   const key = `${apiKey}:${user}`;
   if (!clientPool.has(key)) {
-    clientPool.set(key, new MailClient({
+    clientPool.set(key, new (await loadMailClient())({
       apiKey,
       user,
       logger: { info: () => {}, warn: () => {}, error: () => {} },
@@ -67,8 +79,8 @@ function getClient(apiKey, user) {
   return clientPool.get(key);
 }
 
-function createClient(apiKey, user, logger = null) {
-  return new MailClient({
+async function createClient(apiKey, user, logger = null) {
+  return new (await loadMailClient())({
     apiKey,
     user,
     logger: logger || { info: () => {}, warn: () => {}, error: () => {} },
@@ -94,7 +106,7 @@ export async function listMessages(fid = "1", options = {}) {
     }
   }
 
-  const client = getClient(process.env.CLAWEMAIL_API_KEY, process.env.CLAWEMAIL_ADDRESS);
+  const client = await getClient(process.env.CLAWEMAIL_API_KEY, process.env.CLAWEMAIL_ADDRESS);
 
   const queryParams = { fid, limit: Math.max(numLimit, 50) };
   if (unread) queryParams.unread = true;
@@ -127,7 +139,7 @@ export async function searchMessages(keyword, options = {}) {
   const { from, subject, since, before, unread, limit = 20, fid = "1" } = options;
   const numLimit = Number(limit) || 20;
 
-  const client = getClient(process.env.CLAWEMAIL_API_KEY, process.env.CLAWEMAIL_ADDRESS);
+  const client = await getClient(process.env.CLAWEMAIL_API_KEY, process.env.CLAWEMAIL_ADDRESS);
 
   const queryParams = { fid, limit: Math.max(numLimit, 100) };
   if (unread) queryParams.unread = true;
@@ -176,12 +188,12 @@ export async function listFolders() {
 
 export async function readMessage(apiKey, user, messageId, options = {}) {
   const { markRead = false } = options;
-  const client = createClient(apiKey, user);
+  const client = await createClient(apiKey, user);
   return await client.mail.read({ id: messageId, markRead });
 }
 
 export async function downloadAttachment(apiKey, user, messageId, partId, outputPath) {
-  const client = createClient(apiKey, user);
+  const client = await createClient(apiKey, user);
   const att = await client.mail.getAttachment({ id: messageId, part: partId });
   await att.writeFile(outputPath);
   return {
@@ -195,7 +207,7 @@ export async function downloadAttachment(apiKey, user, messageId, partId, output
 // 读取附件内容到内存（Buffer），供插件以 HTTP 方式直接回传给前端预览/下载。
 // 与 downloadAttachment 不同，这里不落盘，适合小附件。
 export async function readAttachment(apiKey, user, messageId, partId) {
-  const client = createClient(apiKey, user);
+  const client = await createClient(apiKey, user);
   const att = await client.mail.getAttachment({ id: messageId, part: partId });
   const buffer = await att.buffer();
   return {
@@ -214,7 +226,7 @@ export async function sendMail(apiKey, user, options) {
   if (!subject) throw new Error("sendMail: 'subject' is required");
   if (!body) throw new Error("sendMail: 'body' is required");
 
-  const client = createClient(apiKey, user);
+  const client = await createClient(apiKey, user);
   return await client.mail.send({
     to: Array.isArray(to) ? to : [to],
     cc: cc ? (Array.isArray(cc) ? cc : [cc]) : undefined,
@@ -235,7 +247,7 @@ export async function replyToMail(apiKey, user, messageId, options) {
   const { body, html = false, toAll = false, cc, attachments = [] } = options;
   if (!body) throw new Error("replyToMail: 'body' is required");
 
-  const client = createClient(apiKey, user);
+  const client = await createClient(apiKey, user);
   return await client.mail.reply({
     id: messageId,
     body,
@@ -262,8 +274,8 @@ export async function markRead(messageId, read = true) {
 
 // ── 实时监听（用 SDK） ─────────────────────────────────
 
-export function watch(apiKey, user, onMessage) {
-  const client = createClient(apiKey, user);
+export async function watch(apiKey, user, onMessage) {
+  const client = await createClient(apiKey, user);
   client.ws.onMessage(async ({ mailId }) => {
     if (onMessage) await onMessage(mailId);
   });
