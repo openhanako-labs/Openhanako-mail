@@ -471,7 +471,7 @@ export default function (app, ctx) {
       }
 
       const messagesRaw = await runInbox(["list", account.email, `--fid=${folder}`, "--limit=50"], inboxEnvFor(account));
-      const messages = Array.isArray(messagesRaw) ? messagesRaw : [];
+      let messages = Array.isArray(messagesRaw) ? messagesRaw : [];
 
       // 合并 WebSocket 实时缓存（ClawEmail 账号）
       if (account.email.endsWith("@claw.163.com")) {
