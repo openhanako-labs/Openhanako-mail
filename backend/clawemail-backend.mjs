@@ -27,14 +27,8 @@ async function loadMailClient() {
 
 function runMailCli(args, timeout = 15000) {
   return new Promise((resolve, reject) => {
-    const escapedArgs = args.map(a => {
-      if (a.includes(' ') || a.includes('"')) {
-        return `"${a.replace(/"/g, '\\"')}"`;
-      }
-      return a;
-    });
-    const cmd = `mail-cli.cmd --json ${escapedArgs.join(' ')}`;
-    const proc = spawn(cmd, {
+    const mailCliBin = path.join(__dirname, "node_modules", "@clawemail", "mail-cli", "bin", "mail-cli");
+    const proc = spawn(process.execPath, [mailCliBin, "--json", ...args], {
       encoding: "utf-8",
       timeout,
       windowsHide: true,

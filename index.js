@@ -14,6 +14,10 @@ function checkDeps() {
   const sdkPath = path.join(BACKEND_DIR, "node_modules", "@clawemail", "node-sdk", "package.json");
   if (!fs.existsSync(sdkPath)) missing.push("@clawemail/node-sdk");
 
+  // mail-cli（用于 move/mark/folders 等）
+  const mailCliPath = path.join(BACKEND_DIR, "node_modules", "@clawemail", "mail-cli", "package.json");
+  if (!fs.existsSync(mailCliPath)) missing.push("@clawemail/mail-cli");
+
   // IMAP 依赖
   const imapPath = path.join(BACKEND_DIR, "node_modules", "imap", "package.json");
   if (!fs.existsSync(imapPath)) missing.push("imap");
