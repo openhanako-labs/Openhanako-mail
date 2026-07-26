@@ -1,0 +1,27 @@
+{
+  "manifestVersion": 1,
+  "id": "hanako-mail",
+  "name": "Hanako Mail",
+  "version": "0.1.0",
+  "description": "多邮箱聚合管理插件：IMAP/SMTP + 官方 API，支持多账号、文件夹、已读未读、回复。",
+  "minAppVersion": "0.0.0",
+  "trust": "full-access",
+  "contributes": {
+    "page": {
+      "title": { "zh": "邮件", "en": "Mail" },
+      "icon": "<svg viewBox='0 0 24 24' fill='none' stroke='#6aa7ff' stroke-width='1.5'><rect x='3' y='3' width='18' height='18' rx='3'/><path d='M3 7l9 6 9-6'/></svg>",
+      "route": "/mail"
+    },
+    "tools": [
+      { "source": "tools/accounts.js", "title": "账号管理" },
+      { "source": "tools/folders.js", "title": "文件夹列表" },
+      { "source": "tools/messages.js", "title": "邮件列表" },
+      { "source": "tools/sync.js", "title": "同步邮件" },
+      { "source": "tools/send.js", "title": "发送邮件" }
+    ]
+  },
+  "ui": {
+    "hostCapabilities": ["external.open", "clipboard.writeText", "resource.read", "resource.write"]
+  },
+  "capabilities": ["resource.read", "resource.write"]
+}

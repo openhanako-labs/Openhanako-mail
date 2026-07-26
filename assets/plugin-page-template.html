@@ -1,0 +1,1207 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hanako Mail · 纸质档案室</title>
+<style>
+:root {
+  --display: 'Noto Serif SC', 'Songti SC', 'STSong', 'SimSun', serif;
+  --ui: system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+
+  --ink: #3a3226;
+  --ink-soft: #6b5e51;
+  --text-muted: #8c7e6e;
+  --accent: #9c3d2e;
+  --accent-dark: #7a2f22;
+  --accent-light: rgba(156,61,46,.08);
+  --gold: #b08d57;
+  --gold-light: #d4bb7e;
+  --danger: #8a3b32;
+
+  --bg: #efe7d3;
+  --paper: #f7f1e3;
+  --cream: #f4efd2;
+  --sidebar: #e6dcc6;
+  --border: #c4b49a;
+  --shadow-block: #d8cbb2;
+  --highlight: rgba(255,255,255,.7);
+  --input-bg: #fffbf3;
+  --hover-row: #ead9b5;
+  --radius: 4px;
+}
+
+body[data-hana-theme="dark"] {
+  --ink: #e6dfd0;
+  --ink-soft: #b8ad99;
+  --text-muted: #8f8272;
+  --accent: #c86b56;
+  --accent-dark: #e08a74;
+  --accent-light: rgba(200,107,86,.10);
+  --gold: #d4bb7e;
+  --gold-light: #5c5230;
+  --bg: #2a231b;
+  --paper: #352e25;
+  --cream: #2a231b;
+  --sidebar: #332b22;
+  --border: #5a4d3e;
+  --shadow-block: #0d0b08;
+  --highlight: rgba(255,255,255,.06);
+  --input-bg: #3a3228;
+  --hover-row: #45382a;
+}
+
+* { box-sizing: border-box; margin: 0; }
+html, body { height: 100%; }
+body {
+  font-family: var(--ui); color: var(--ink); line-height: 1.6;
+  background: var(--bg); overflow: hidden;
+}
+button, input, textarea, select { font: inherit; }
+
+.app {
+  height: 100vh; display: grid;
+  grid-template-rows: 120px 50px minmax(0, 1fr);
+  background: var(--cream);
+}
+
+.brand-bar {
+  position: relative; overflow: hidden;
+  display: flex; align-items: center; padding: 18px 24px;
+  color: #fff5e6; border-bottom: 4px solid var(--ink);
+  background: linear-gradient(135deg, #5c4a32 0%, #8a6d4f 60%, #a58b66 100%);
+}
+body[data-hana-theme="dark"] .brand-bar {
+  background: linear-gradient(135deg, #1b1510 0%, #2e241b 60%, #3a2f22 100%);
+}
+.brand-bar::before {
+  content: ""; position: absolute; inset: 0;
+  background: repeating-linear-gradient(0deg, rgba(255,255,255,.04) 0 1px, transparent 1px 4px);
+}
+.brand { position: relative; z-index: 2; }
+.brand-kicker { font: 700 10px/1.2 var(--display); letter-spacing: .18em; color: var(--gold-light); }
+body[data-hana-theme="dark"] .brand-kicker { color: var(--gold); }
+.brand-name { font: 900 clamp(20px, 2.6vw, 28px)/1.15 var(--display); letter-spacing: .06em; }
+.scene { position: absolute; inset: 0; pointer-events: none; }
+.scene .seal {
+  position: absolute; right: 24px; top: 18px; width: 56px; height: 56px;
+  border: 3px solid var(--accent); border-radius: 50%; color: var(--accent);
+  display: grid; place-items: center; font: 900 16px var(--display);
+  transform: rotate(-12deg); opacity: .9;
+  background: rgba(0,0,0,.15);
+}
+.scene .line {
+  position: absolute; left: 0; right: 0; height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.25), transparent);
+}
+.scene .line:nth-child(2) { top: 28%; }
+.scene .line:nth-child(3) { top: 60%; }
+
+.navbar {
+  display: flex; align-items: stretch; gap: 6px; padding: 6px 16px 0;
+  background: var(--sidebar); border-bottom: 4px solid var(--ink);
+  box-shadow: inset 0 2px rgba(255,255,255,.35);
+}
+.nav-item {
+  min-width: 96px; display: flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 6px 14px 8px; cursor: pointer; font: 800 13px var(--display);
+  color: #3a3226; border: 2px solid var(--ink); border-bottom: 0;
+  border-radius: 6px 6px 0 0; background: #cfc3a8;
+  box-shadow: inset 0 2px rgba(255,255,255,.5); transform: translateY(2px);
+}
+body[data-hana-theme="dark"] .nav-item { color: #e6dfd0; background: #3a3228; }
+.nav-item:hover { filter: brightness(1.04); }
+.nav-item.active {
+  color: var(--ink); background: var(--cream); transform: none;
+  box-shadow: inset 0 3px var(--highlight);
+}
+.nav-item .badge {
+  padding: 0 7px; border-radius: 10px; background: var(--gold-light); color: #3a3226; font: 800 10px var(--display);
+}
+
+.workspace {
+  min-height: 0; display: grid;
+  grid-template-columns: 232px minmax(0, 1fr);
+  gap: 10px; padding: 10px; background: var(--sidebar);
+}
+body[data-hana-theme="dark"] .workspace { background: #1e1914; }
+
+.rail {
+  min-height: 0; display: flex; flex-direction: column;
+  border: 3px solid var(--border); border-radius: 6px;
+  background: var(--sidebar); overflow: hidden;
+}
+.rail-title {
+  padding: 8px 12px; font: 900 12px var(--display); color: var(--accent-dark);
+  border-bottom: 2px solid var(--border); background: var(--paper);
+}
+.rail-title::before { content: '◉ '; color: var(--gold); }
+.rail-title.folders::before { content: '▤ '; }
+.rail-scroll { overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.rail-sep { height: 2px; background: var(--border); margin: 2px 0; opacity: .6; }
+
+.acct, .folder {
+  text-align: left; cursor: pointer; padding: 7px 10px;
+  border: 2px solid var(--border); border-radius: 6px; background: var(--paper);
+  font: 700 12px var(--ui); color: var(--ink);
+  display: flex; flex-direction: column; gap: 2px; position: relative;
+}
+.acct:hover, .folder:hover { filter: brightness(1.04); }
+.acct.active, .folder.active { border-color: var(--accent); background: var(--accent-light); }
+.acct .sub, .folder .sub { font-size: 10px; color: var(--text-muted); font-weight: 400; }
+.folder .badge {
+  position: absolute; right: 8px; top: 7px; padding: 0 7px; border-radius: 10px;
+  background: var(--gold-light); color: #3a3226; font: 800 10px var(--display);
+}
+.folder .acct-del {
+  position: absolute; right: 6px; top: 5px; padding: 1px 6px; font-size: 10px;
+}
+
+.main {
+  min-height: 0; border: 3px solid var(--border); border-radius: 6px;
+  background: var(--cream); box-shadow: inset 0 0 0 2px var(--highlight);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.topbar {
+  min-height: 60px; padding: 10px 18px; display: flex; justify-content: space-between; align-items: center;
+  background: var(--paper); border-bottom: 2px solid var(--border); gap: 10px;
+}
+.topbar h2 { font: 900 16px/1.3 var(--display); letter-spacing: .06em; }
+.topbar h2::before { content: '▸ '; color: var(--gold); }
+.topbar .subtitle { display: block; font-size: 11px; color: var(--text-muted); font-family: var(--ui); font-weight: 400; }
+.topbar-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+.content { flex: 1; overflow-y: auto; padding: 14px 16px 28px; }
+.page { display: none; flex-direction: column; gap: 12px; }
+.page.active { display: flex; }
+
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; }
+.metric {
+  position: relative; padding: 10px 12px; background: var(--paper);
+  border: 2px solid var(--border); border-radius: var(--radius);
+  box-shadow: inset 0 2px var(--highlight), 3px 3px 0 var(--shadow-block);
+}
+.metric::after { content: '◆'; position: absolute; right: 8px; top: 8px; color: var(--border); font-size: 8px; }
+.metric .value { font: 900 18px/1.2 var(--display); color: var(--accent-dark); font-variant-numeric: tabular-nums; }
+.metric .label { margin-top: 2px; font: 700 10px var(--display); color: var(--text-muted); }
+
+.panel, .card {
+  background: var(--paper); border: 2px solid var(--border); border-radius: var(--radius);
+  box-shadow: inset 0 2px var(--highlight), 3px 3px 0 var(--shadow-block);
+}
+.panel { padding: 14px 16px; }
+.panel-title { margin-bottom: 10px; font: 900 13px var(--display); color: var(--accent-dark); }
+.panel-title::before { content: '✦ '; color: var(--gold); }
+.card-list { display: flex; flex-direction: column; gap: 10px; }
+.card { padding: 12px 14px; transition: transform .12s, box-shadow .12s; animation: rise .18s ease; position: relative; }
+.card:hover { transform: translateY(-1px); box-shadow: inset 0 2px var(--highlight), 4px 5px 0 var(--shadow-block); }
+.card.unread { border-left: 4px solid var(--accent); }
+.card-title { font-size: 14px; font-weight: 800; }
+.card-body { font-size: 12px; color: var(--ink-soft); margin-top: 4px; }
+.card-actions { display: flex; gap: 8px; margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--border); }
+@keyframes rise { from { opacity: 0; transform: translateY(3px); } }
+
+.stamp {
+  position: absolute; right: 12px; top: 10px; width: 42px; height: 42px;
+  border: 2px solid var(--accent); border-radius: 6px; color: var(--accent);
+  display: grid; place-items: center; font: 900 10px/1 var(--display);
+  transform: rotate(-14deg); opacity: .85;
+}
+body[data-hana-theme="dark"] .stamp { border-color: var(--accent); color: var(--accent); }
+
+.btn {
+  cursor: pointer; padding: 6px 14px; border: 2px solid var(--ink); border-radius: 6px;
+  background: #e4dbca; color: #3a3226; font: 800 12px var(--display);
+  box-shadow: inset 0 2px rgba(255,255,255,.55), 2px 2px 0 var(--shadow-block);
+  transition: transform .1s, filter .1s;
+}
+body[data-hana-theme="dark"] .btn { background: #3a3228; color: var(--ink); }
+.btn:hover { filter: brightness(1.05); transform: translateY(-1px); }
+.btn:active { transform: translateY(1px); box-shadow: inset 0 2px rgba(0,0,0,.12); }
+.btn.primary { background: var(--accent); color: #fff5e6; }
+.btn.danger { background: #f0d7c8; color: #7a2f22; }
+body[data-hana-theme="dark"] .btn.danger { background: #4a2c28; color: #e8b0a8; }
+.btn.small { padding: 4px 10px; font-size: 11px; }
+
+.inp {
+  width: 100%; padding: 8px 10px; border: 2px solid var(--border); border-radius: 6px;
+  background: var(--input-bg); color: var(--ink); font-size: 13px;
+  box-shadow: inset 2px 2px rgba(0,0,0,.05);
+}
+.inp:focus { outline: 3px solid rgba(176,141,87,.25); border-color: var(--gold); }
+textarea.inp { resize: vertical; min-height: 160px; line-height: 1.6; }
+.field { display: flex; flex-direction: column; gap: 8px; max-width: 520px; }
+.field label { font: 700 11px var(--ui); color: var(--ink-soft); }
+.field-row { display: flex; gap: 8px; }
+.account-fields { border-left: 2px solid var(--gold-light); padding-left: 12px; margin-left: 4px; }
+.field-group { display: flex; flex-direction: column; gap: 6px; }
+.field-hint { font: 700 10px var(--ui); color: var(--gold); letter-spacing: .05em; text-transform: uppercase; margin-top: 6px; }
+.field-hint:first-child { margin-top: 0; }
+body[data-hana-theme="dark"] .field-hint { color: var(--gold); }
+body[data-hana-theme="dark"] .account-fields { border-left-color: var(--gold); }
+
+.empty {
+  padding: 28px 16px; text-align: center; color: var(--text-muted);
+  font: 700 12px var(--display); border: 2px dashed var(--border);
+  border-radius: 6px; background: var(--accent-light);
+}
+.loading { padding: 24px 16px; text-align: center; color: var(--text-muted); font: 700 12px var(--display); }
+
+.toast {
+  position: fixed; z-index: 50; left: 50%; bottom: 24px;
+  transform: translate(-50%, 20px); padding: 8px 16px;
+  color: #fff5e6; background: var(--ink); border: 2px solid var(--gold);
+  border-radius: 6px; box-shadow: 3px 3px 0 rgba(0,0,0,.25);
+  font: 700 12px var(--display); opacity: 0; pointer-events: none; transition: .2s;
+}
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* 新邮件通知弹窗 */
+.noti-container {
+  position: fixed; z-index: 100; top: 8px; right: 8px;
+  display: flex; flex-direction: column; gap: 6px;
+  pointer-events: none; max-width: 320px;
+}
+.noti-toast {
+  pointer-events: auto; cursor: pointer;
+  padding: 10px 14px;
+  background: var(--ink); border: 2px solid var(--gold);
+  border-radius: 6px; box-shadow: 3px 3px 0 rgba(0,0,0,.25);
+  font: 12px var(--display); color: #fff5e6;
+  transform: translateX(120%); opacity: 0;
+  transition: all .3s ease;
+  position: relative;
+}
+.noti-toast.show { transform: translateX(0); opacity: 1; }
+.noti-toast .noti-subj { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.noti-toast .noti-from { font-size: 11px; opacity: .8; }
+.noti-toast .noti-close {
+  position: absolute; top: 2px; right: 4px; border: none; background: none;
+  cursor: pointer; color: inherit; font-size: 14px; opacity: .5;
+}
+.noti-toast .noti-close:hover { opacity: 1; }
+
+/* 邮件详情 */
+.detail-head { background: var(--paper); border: 2px solid var(--border); border-radius: 6px; padding: 12px 14px; box-shadow: inset 0 2px var(--highlight); }
+.detail-subject { font: 900 16px/1.3 var(--display); color: var(--accent-dark); }
+.detail-meta { margin-top: 8px; font-size: 12px; color: var(--ink-soft); display: grid; gap: 3px; }
+.detail-meta b { color: var(--ink); font-weight: 800; }
+.mail-body-wrap {
+  border: 2px solid var(--border); border-radius: 6px;
+  background: var(--paper); overflow: hidden;
+  box-shadow: inset 0 2px var(--highlight), 3px 3px 0 var(--shadow-block);
+}
+.mail-body-frame { width: 100%; border: 0; height: 64vh; min-height: 360px; background: #fff; display: block; }
+.mail-body-text { white-space: pre-wrap; font-size: 13px; color: var(--ink); border: 2px solid var(--border); border-radius: 6px; padding: 12px 14px; background: var(--paper); }
+
+/* 附件列表 */
+.attachments {
+  margin-top: 12px; padding: 12px 14px;
+  border: 2px dashed var(--border); border-radius: 6px; background: var(--accent-light);
+}
+.attachments-title { font: 900 12px var(--display); color: var(--accent-dark); margin-bottom: 8px; }
+.attachments-title::before { content: '📎 '; }
+.att-list { display: flex; flex-direction: column; gap: 8px; }
+.att-item {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+  border: 2px solid var(--border); border-radius: 6px; background: var(--paper);
+  box-shadow: inset 0 2px var(--highlight);
+}
+.att-item .att-ico { font-size: 18px; line-height: 1; }
+.att-item .att-meta { flex: 1; min-width: 0; }
+.att-item .att-name { font: 800 12px var(--ui); color: var(--ink); word-break: break-all; }
+.att-item .att-sub { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+.att-item .att-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.att-item .btn.small { padding: 3px 9px; font-size: 11px; }
+.att-tag {
+  display: inline-block; padding: 0 6px; border-radius: 8px; font: 700 9px var(--display);
+  background: var(--gold-light); color: #3a3226; margin-left: 6px; vertical-align: middle;
+}
+
+/* 摘要预览 */
+.card-snippet {
+  margin-top: 6px; font-size: 12px; line-height: 1.55;
+  color: var(--ink-soft); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; border-left: 2px dashed var(--border); padding-left: 8px;
+}
+
+/* 搜索栏 */
+.search-bar { display: flex; gap: 6px; align-items: center; margin-right: auto; }
+.search-bar .inp { width: 240px; padding: 5px 10px; font-size: 12px; }
+.search-bar .btn { font-size: 12px; padding: 4px 10px; }
+.search-hint { font: 700 10px var(--display); color: var(--text-muted); margin-left: 6px; }
+
+/* 未读徽标（与 .folder .badge 共用，但增强） */
+.folder .badge[data-unread="0"] { display: none; }
+.badge-dot {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent); margin-left: 4px; vertical-align: middle;
+  box-shadow: 0 0 0 2px var(--paper);
+}
+
+.details { border-top: 1px dashed var(--border); margin-top: 10px; }
+.details > summary {
+  cursor: pointer; list-style: none; padding: 8px 2px 0;
+  font: 800 11px var(--display); color: var(--accent-dark);
+}
+.details > summary::-webkit-details-marker { display: none; }
+.details > summary::before { content: '＋ '; color: var(--gold); }
+.details[open] > summary::before { content: '－ '; }
+
+.sep {
+  border: none; border-top: 2px solid var(--border); margin: 14px 0;
+  position: relative;
+}
+.sep::before {
+  content: '• ✦ •'; position: absolute; top: -11px; left: 50%; transform: translateX(-50%);
+  background: var(--cream); padding: 0 10px; color: var(--gold); font: 900 11px var(--display);
+}
+</style>
+</head>
+<body>
+
+<script>
+(function(){try{window.parent.postMessage({source:'hana-plugin',type:'ready'},'*')}catch(e){}})();
+setTimeout(function(){try{window.parent.postMessage({source:'hana-plugin',type:'ready'},'*')}catch(e){}},200);
+setTimeout(function(){try{window.parent.postMessage({source:'hana-plugin',type:'ready'},'*')}catch(e){}},500);
+setTimeout(function(){try{window.parent.postMessage({source:'hana-plugin',type:'ready'},'*')}catch(e){}},1000);
+</script>
+
+<div class="app">
+  <header class="brand-bar">
+    <div class="brand">
+      <span class="brand-kicker">MAIL HUB</span>
+      <div class="brand-name">Hanako Mail</div>
+    </div>
+    <div class="scene" aria-hidden="true">
+      <div class="line"></div><div class="line"></div>
+      <div class="seal">MAIL</div>
+    </div>
+  </header>
+
+  <nav class="navbar" id="navbar">
+    <div class="nav-item active" data-page="overview">✦ 账号</div>
+    <div class="nav-item" data-page="list">◆ 收件箱</div>
+    <div class="nav-item" data-page="settings">▣ 同步</div>
+  </nav>
+
+  <div class="workspace">
+    <aside class="rail">
+      <div class="rail-title">邮箱账号</div>
+      <div class="rail-scroll" id="acctList"></div>
+      <div class="rail-sep"></div>
+      <div class="rail-title folders">文件夹</div>
+      <div class="rail-scroll" id="folderList"><div class="empty" style="padding:14px 8px">选择账号后显示</div></div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div><h2 id="pageTitle">账号</h2><span class="subtitle" id="pageSubtitle">邮箱账号管理</span></div>
+        <div class="topbar-actions">
+          <div class="search-bar" id="searchBar" style="display:none">
+            <input class="inp" id="searchInput" placeholder="搜索主题或发件人…">
+            <button class="btn" id="searchBtn">✦ 搜索</button>
+            <button class="btn" id="searchClearBtn">✕</button>
+          </div>
+          <button class="btn small" id="composeBtn" style="display:none">✚ 写邮件</button>
+          <button class="btn small" id="themeBtn">◐ 切换主题</button>
+        </div>
+      </header>
+      <div class="content">
+
+        <div class="page active" id="page-overview">
+          <div class="metrics" id="metrics">
+            <div class="metric"><div class="value" id="metricAccounts">-</div><div class="label">账号</div></div>
+            <div class="metric"><div class="value" id="metricUnread">-</div><div class="label">未读</div></div>
+            <div class="metric"><div class="value" id="metricSynced">-</div><div class="label">已同步</div></div>
+          </div>
+          <div class="card-list" id="ovCards"></div>
+          <hr class="sep">
+          <div class="panel" id="addAccountPanel">
+            <div class="panel-title">添加账号</div>
+            <form id="addAccountForm" class="field">
+              <input class="inp" id="accName" placeholder="名称（如：奥菲莉娅）" required>
+              <input class="inp" id="accEmail" placeholder="邮箱地址（决定后端选择）" required>
+              <select class="inp" id="accProvider" onchange="updateAccountFields()">
+                <option value="clawemail">ClawEmail（@claw.163.com）</option>
+                <option value="agentqq">AgentQQ（@agent.qq.com，腾讯企业邮）</option>
+                <option value="imap">IMAP/SMTP（标准邮箱）</option>
+                <option value="gmail">Gmail</option>
+                <option value="qq">QQ 个人邮箱（IMAP）</option>
+                <option value="163">163 邮箱（IMAP）</option>
+                <option value="outlook">Outlook / Office365</option>
+              </select>
+
+              <!-- 按 provider 动态显示字段 -->
+              <div id="accountFields" class="account-fields">
+                <!-- ClawEmail / AgentQQ -->
+                <div data-for="clawemail,agentqq" class="field-group">
+                  <div class="field-hint">邮箱 API Key（在 .env 中配置或此处填写）</div>
+                  <input class="inp" id="accApiKey" placeholder="API Key">
+                </div>
+
+                <!-- IMAP / 个人邮箱 -->
+                <div data-for="imap,gmail,qq,163,outlook" class="field-group" style="display:none">
+                  <div class="field-hint">IMAP 配置</div>
+                  <input class="inp" id="accImapHost" placeholder="IMAP 主机（如 imap.qq.com）">
+                  <input class="inp" id="accImapPort" placeholder="IMAP 端口（通常 993）">
+                  <input class="inp" id="accImapUser" placeholder="IMAP 用户名（通常 = 邮箱地址）">
+                  <input class="inp" id="accImapPass" type="password" placeholder="授权码 / 应用专用密码">
+                  <div class="field-hint">SMTP 配置</div>
+                  <input class="inp" id="accSmtpHost" placeholder="SMTP 主机（如 smtp.qq.com）">
+                  <input class="inp" id="accSmtpPort" placeholder="SMTP 端口（通常 465/587）">
+                  <input class="inp" id="accSmtpUser" placeholder="SMTP 用户名">
+                  <input class="inp" id="accSmtpPass" type="password" placeholder="SMTP 授权码">
+                </div>
+              </div>
+
+              <button type="submit" class="btn primary">保存</button>
+            </form>
+          </div>
+        </div>
+
+        <div class="page" id="page-list">
+          <div class="card-list" id="listCards"></div>
+          <div class="empty" id="listEmpty" style="display:none">这里还什么都没有，去探索吧 ✦</div>
+        </div>
+
+        <div class="page" id="page-detail">
+          <div id="detailBox"></div>
+        </div>
+
+        <div class="page" id="page-compose">
+          <div class="panel">
+            <div class="panel-title" id="composeTitle">写邮件</div>
+            <form id="composeForm" class="field">
+              <label>收件人</label>
+              <input class="inp" id="cmpTo" placeholder="to@example.com" required>
+              <label>主题</label>
+              <input class="inp" id="cmpSubject" placeholder="主题">
+              <label>正文</label>
+              <textarea class="inp" id="cmpBody" placeholder="写点什么…"></textarea>
+              <div class="field-row">
+                <button type="submit" class="btn primary">发送</button>
+                <button type="button" class="btn" id="cmpCancel">取消</button>
+              </div>
+            </form>
+          </div>
+        </div>
+
+        <div class="page" id="page-settings">
+          <div class="panel">
+            <div class="panel-title">同步</div>
+            <div style="display:flex;flex-direction:column;gap:10px;max-width:420px">
+              <button class="btn primary" id="syncBtn">刷新当前文件夹</button>
+              <div id="syncStatus" style="font-size:12px;color:var(--text-muted)">点击按钮同步最新邮件</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </main>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<div class="noti-container" id="noti-container"></div>
+
+<script>
+var PLUGIN_ID = 'your-plugin-id';
+var _t = new URL(location.href).searchParams.get('token');
+
+// 外网图片是否走插件服务端代理（/image-proxy）。
+// 设为 true：把正文里的外网 <img src> / CSS url() 改写为同源 /image-proxy?url=...，
+// 绕过沙箱 iframe 的跨域限制。proxyUrl() 会自动带上 ?token=，因此鉴权通过。
+// 注意：该代理通过独立子进程拉取外网（绕开 Hana 对插件内 global fetch 的拦截），
+// 在 Hana dev 环境和正式版中均可用（已验证带 token 返回 HTTP 200 逐字节一致）。
+var USE_IMAGE_PROXY = true;
+function api(path, options) {
+  var u = '/api/plugins/' + PLUGIN_ID + path + (_t ? (path.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(_t) : '');
+  return fetch(u, { headers: { 'Content-Type': 'application/json' }, ...options });
+}
+
+function currentTheme() {
+  try { var s = localStorage.getItem('plugin-theme'); if (s) return s; } catch (e) {}
+  return document.body.dataset.hanaTheme || 'light';
+}
+function applyTheme(t) {
+  document.body.dataset.hanaTheme = t;
+  try { localStorage.setItem('plugin-theme', t); } catch (e) {}
+}
+applyTheme(currentTheme());
+document.getElementById('themeBtn').onclick = function () {
+  applyTheme(document.body.dataset.hanaTheme === 'dark' ? 'light' : 'dark');
+};
+
+var TITLES = {
+  overview: ['账号', '邮箱账号管理'],
+  list: ['收件箱', '邮件列表'],
+  detail: ['邮件', '邮件详情'],
+  compose: ['写信', '撰写邮件'],
+  settings: ['同步', '刷新与状态']
+};
+function navigateTo(page) {
+  document.querySelectorAll('.page').forEach(function (p) { p.classList.toggle('active', p.id === 'page-' + page); });
+  document.querySelectorAll('.nav-item').forEach(function (n) { n.classList.toggle('active', n.dataset.page === page); });
+  var t = TITLES[page] || ['', ''];
+  document.getElementById('pageTitle').textContent = t[0];
+  document.getElementById('pageSubtitle').textContent = t[1];
+  document.getElementById('composeBtn').style.display = (page === 'detail' || page === 'list') ? 'inline-block' : 'none';
+  document.getElementById('searchBar').style.display = (page === 'list') ? 'flex' : 'none';
+}
+document.querySelectorAll('.nav-item').forEach(function (n) {
+  n.addEventListener('click', function () { navigateTo(n.dataset.page); });
+});
+
+var _toastTimer;
+function toast(msg) {
+  var el = document.getElementById('toast');
+  el.textContent = msg; el.classList.add('show');
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(function () { el.classList.remove('show'); }, 2200);
+}
+/* ── 新邮件轮询通知 ── */
+var NOTI_POLL_MS = 15000; // 15 秒检查一次
+var _notiPollTimer = null;
+var _lastMsgId = {}; // accountId+folderId → latest message id
+
+function showNotification(subject, from, msgId, accountId) {
+  var c = document.getElementById('noti-container');
+  if (!c) return;
+  // 如果该邮件已经通知过（相同 id 已经在容器里），跳过
+  if (c.querySelector('[data-mid="' + cssEscape(msgId) + '"]')) return;
+  var el = document.createElement('div');
+  el.className = 'noti-toast';
+  el.dataset.mid = msgId;
+  el.dataset.aid = accountId;
+  el.innerHTML =
+    '<button class="noti-close" onclick="event.stopPropagation();this.parentElement.remove()">×</button>' +
+    '<div class="noti-from">' + esc(from || '(未知发件人)') + '</div>' +
+    '<div class="noti-subj">📩 ' + esc(subject || '(无主题)') + '</div>';
+  el.addEventListener('click', function () {
+    var folderId = state.folderId || 'INBOX';
+    openDetail(msgId, accountId, folderId);
+    c.innerHTML = ''; // 关闭所有通知
+  });
+  c.appendChild(el);
+  requestAnimationFrame(function () { if (el) el.classList.add('show'); });
+  setTimeout(function () {
+    if (el) el.classList.remove('show');
+    setTimeout(function () { if (el && el.parentElement) el.remove(); }, 300);
+  }, 5000);
+}
+function checkNewMessages(msgs, accountId, folderId) {
+  if (!msgs || !msgs.length) return;
+  var key = accountId + ':' + folderId;
+  var latest = msgs[0];
+  var prev = _lastMsgId[key];
+  if (prev !== undefined && latest.id !== prev) {
+    // 页面内 toast
+    showNotification(latest.subject, latest.from, latest.id, accountId);
+    // 桌面原生通知
+    fetchNotifyDesktop(latest.subject, latest.from, latest.id, accountId);
+  }
+  _lastMsgId[key] = latest.id;
+}
+function fetchNotifyDesktop(subject, from, msgId, accountId) {
+  api('/notify', {
+    method: 'POST',
+    body: JSON.stringify({ subject: subject, sender: from, messageId: msgId, accountId: accountId })
+  }).catch(function () { /* silent */ });
+}
+
+// 轮询桌面通知点击事件
+var _clickPollTimer = null;
+function startClickPoll() {
+  if (_clickPollTimer) clearInterval(_clickPollTimer);
+  _clickPollTimer = setInterval(async function () {
+    try {
+      var resp = await api('/clicks/latest');
+      if (!resp.ok) return;
+      var d = await resp.json();
+      if (d && d.ok && d.data && d.data.messageId) {
+        openDetail(d.data.messageId, d.data.accountId || state.accountId, state.folderId || 'INBOX');
+      }
+    } catch (e) { /* silent */ }
+  }, 1000);
+}
+function stopClickPoll() {
+  if (_clickPollTimer) { clearInterval(_clickPollTimer); _clickPollTimer = null; }
+}
+async function pollNewMessages() {
+  try {
+    if (!state.accountId) return;
+    var aid = state.accountId;
+    var fid = state.folderId || 'INBOX';
+    var resp = await api('/messages?accountId=' + encodeURIComponent(aid) + '&folderId=' + encodeURIComponent(fid));
+    if (!resp.ok) return;
+    var d = await resp.json();
+    if (d && d.ok && Array.isArray(d.data)) checkNewMessages(d.data, aid, fid);
+  } catch (e) { /* silent */ }
+}
+function startPolling() {
+  if (_notiPollTimer) clearInterval(_notiPollTimer);
+  pollNewMessages();
+  _notiPollTimer = setInterval(pollNewMessages, NOTI_POLL_MS);
+  startClickPoll();
+}
+function stopPolling() {
+  stopClickPoll();
+  if (_notiPollTimer) { clearInterval(_notiPollTimer); _notiPollTimer = null; }
+}
+function esc(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function joinAddrs(a) {
+  if (a == null) return '';
+  if (Array.isArray(a)) return a.join(', ');
+  return String(a);
+}
+
+// 构建附件下载/预览地址（与 api() 一致，自动带上 token）
+function attachmentUrl(messageId, partId, download) {
+  var p = '/attachments/' + encodeURIComponent(messageId) + '/' + encodeURIComponent(partId) +
+    '?accountId=' + encodeURIComponent(state.accountId || '') +
+    (download ? '&download=1' : '') +
+    (_t ? '&token=' + encodeURIComponent(_t) : '');
+  return '/api/plugins/' + PLUGIN_ID + p;
+}
+
+function humanSize(bytes) {
+  if (bytes == null) return '';
+  var n = Number(bytes);
+  if (!isFinite(n)) return '';
+  var units = ['B', 'KB', 'MB', 'GB'];
+  var i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return (i === 0 ? n : n.toFixed(1)) + ' ' + units[i];
+}
+
+function iconForType(contentType, filename) {
+  var t = (contentType || '').toLowerCase();
+  var name = (filename || '').toLowerCase();
+  if (t.startsWith('image/')) return '🖼️';
+  if (t === 'application/pdf') return '📄';
+  if (t.includes('word') || name.endsWith('.doc') || name.endsWith('.docx')) return '📝';
+  if (t.includes('excel') || t.includes('spreadsheet') || name.endsWith('.xls') || name.endsWith('.xlsx')) return '📊';
+  if (t.includes('zip') || t.includes('compressed') || /\.(zip|rar|7z|tar|gz)$/.test(name)) return '🗜️';
+  if (t.startsWith('audio/')) return '🎵';
+  if (t.startsWith('video/')) return '🎬';
+  if (t.startsWith('text/') || name.endsWith('.txt')) return '📃';
+  return '📎';
+}
+
+function attachmentsHtml(atts) {
+  if (!Array.isArray(atts) || !atts.length) return '';
+  var items = atts.map(function (a) {
+    var id = a.id || '';
+    var name = a.filename || ('attachment_' + id);
+    var sub = [humanSize(a.size), a.contentType || ''].filter(Boolean).join(' · ');
+    var inlineTag = a.inline ? '<span class="att-tag">内嵌</span>' : '';
+    return '<div class="att-item">' +
+      '<span class="att-ico">' + iconForType(a.contentType, name) + '</span>' +
+      '<div class="att-meta">' +
+        '<div class="att-name">' + esc(name) + inlineTag + '</div>' +
+        (sub ? '<div class="att-sub">' + esc(sub) + '</div>' : '') +
+      '</div>' +
+      '<div class="att-actions">' +
+        '<button class="btn small" data-att-preview="' + esc(id) + '" data-att-name="' + esc(name) + '">预览</button>' +
+        '<button class="btn small" data-att-download="' + esc(id) + '" data-att-name="' + esc(name) + '">下载</button>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+  return '<div class="attachments"><div class="attachments-title">附件 (' + atts.length + ')</div>' +
+    '<div class="att-list">' + items + '</div></div>';
+}
+
+// 把正文里的 cid: 内嵌图片引用改写成 /attachments/... 直链，使其能在沙箱 iframe 中显示。
+// 后端 read() 会返回每个附件的 contentId，与正文 cid:xxx 对应。
+// 外部 http(s) 图片是否改写走 /image-proxy 由 USE_IMAGE_PROXY 控制（详见该开关说明）。
+function rewriteImages(html, atts, messageId) {
+  if (!html) return html;
+
+  // 1) cid: → 附件直链（仅对有 contentId 的附件）
+  // 用相对 URL（不带 location.origin），否则会被下面外网图的正则二次匹配并包装进代理
+  if (Array.isArray(atts) && atts.length) {
+    var map = {};
+    atts.forEach(function (a) {
+      if (a.contentId) {
+        var cid = String(a.contentId).replace(/^<?/, '').replace(/>?$/, '');
+        map[cid] = a.id;
+      }
+    });
+    if (Object.keys(map).length) {
+      html = html.replace(/cid:<?([^>"'\s)]+)>?/gi, function (full, inner) {
+        var id = inner.replace(/^<?/, '').replace(/>?$/, '');
+        if (map[id]) return attachmentUrl(messageId, map[id], false);
+        return full;
+      });
+    }
+  }
+
+  // 2) 外部 http(s) 图片 → 视 USE_IMAGE_PROXY 决定是否走插件代理（避开 iframe 沙箱外网限制）
+  // 只处理 <img src="...">（双引号/单引号）和 CSS url(...)；不动 <a href>。
+  if (USE_IMAGE_PROXY) {
+    html = html.replace(/<img\b([^>]*?)\bsrc="(https?:\/\/[^"]+)"/gi, function (full, attrs, src) {
+      return '<img' + attrs + 'src="' + proxyUrl(src) + '"';
+    });
+    html = html.replace(/<img\b([^>]*?)\bsrc='(https?:\/\/[^']+)'/gi, function (full, attrs, src) {
+      return '<img' + attrs + "src='" + proxyUrl(src) + "'";
+    });
+    html = html.replace(/url\(\s*(https?:\/\/[^)\s]+)\s*\)/gi, function (full, src) {
+      return 'url(' + proxyUrl(src) + ')';
+    });
+  }
+
+  return html;
+}
+
+// 构建图片代理 URL（与 api() 一致，自动带上 token）
+function proxyUrl(externalUrl) {
+  return '/api/plugins/' + PLUGIN_ID + '/image-proxy?url=' + encodeURIComponent(externalUrl) +
+    (_t ? '&token=' + encodeURIComponent(_t) : '');
+}
+
+/* ── 全局状态 ── */
+var state = { accountId: null, folderId: 'INBOX', accounts: [], folders: [] };
+var DEFAULT_FOLDERS = [
+  { id: 'INBOX', name: '收件箱', type: 'inbox' },
+  { id: 'Sent', name: '已发送', type: 'sent' },
+  { id: 'Drafts', name: '草稿', type: 'drafts' },
+  { id: 'Trash', name: '已删除', type: 'trash' },
+  { id: 'Spam', name: '垃圾邮件', type: 'spam' }
+];
+
+/* ── 账号 ── */
+function loadAccounts() {
+  return api('/accounts').then(function (r) { return r.json(); }).then(function (d) {
+    state.accounts = d.data || [];
+    var el = document.getElementById('acctList');
+    if (!state.accounts.length) {
+      el.innerHTML = '<div class="empty" style="padding:14px 8px">暂无账号</div>';
+      document.getElementById('metricAccounts').textContent = '0';
+      document.getElementById('metricUnread').textContent = '-';
+      document.getElementById('metricSynced').textContent = '-';
+      document.getElementById('folderList').innerHTML = '<div class="empty" style="padding:14px 8px">添加账号后显示</div>';
+      return;
+    }
+    document.getElementById('metricAccounts').textContent = state.accounts.length;
+    document.getElementById('metricSynced').textContent = '已就绪';
+    el.innerHTML = state.accounts.map(function (a) {
+      return '<button class="acct' + (a.id === state.accountId ? ' active' : '') + '" data-acct="' + a.id + '">' +
+        '<span>' + esc(a.name) + '</span>' +
+        '<span class="sub">' + esc(a.email) + '</span>' +
+        '<span class="acct-del"><button class="btn danger small" data-del-acct="' + a.id + '">删</button></span>' +
+        '</button>';
+    }).join('');
+    if (!state.accountId) selectAccount(state.accounts[0].id);
+  }).catch(function () { toast('加载账号失败'); });
+}
+
+function selectAccount(id) {
+  state.accountId = id;
+  document.querySelectorAll('.acct').forEach(function (b) { b.classList.toggle('active', b.dataset.acct === id); });
+  loadFolders(id);
+}
+
+function loadFolders(accountId) {
+  api('/folders?accountId=' + encodeURIComponent(accountId)).then(function (r) { return r.json(); }).then(function (d) {
+    var folders = (d.data && d.data.length) ? d.data : DEFAULT_FOLDERS;
+    state.folders = folders;
+    var known = folders.some(function (f) { return f.id === state.folderId; });
+    if (!known) state.folderId = 'INBOX';
+    renderFolders();
+    loadMessages(state.accountId, state.folderId);
+  }).catch(function () {
+    state.folders = DEFAULT_FOLDERS;
+    renderFolders();
+    loadMessages(state.accountId, state.folderId);
+  });
+}
+
+function renderFolders() {
+  var el = document.getElementById('folderList');
+  el.innerHTML = state.folders.map(function (f) {
+    var badge = (f.unreadCount && Number(f.unreadCount) > 0) ? '<span class="badge">' + f.unreadCount + '</span>' : '';
+    return '<button class="folder' + (f.id === state.folderId ? ' active' : '') + '" data-folder="' + esc(f.id) + '">' +
+      '<span>' + esc(f.name) + '</span>' + badge + '</button>';
+  }).join('');
+}
+
+function selectFolder(fid) {
+  state.folderId = fid;
+  document.querySelectorAll('.folder').forEach(function (b) { b.classList.toggle('active', b.dataset.folder === fid); });
+  loadMessages(state.accountId, fid);
+}
+
+/* ── 邮件列表 ── */
+function loadMessages(accountId, folderId) {
+  var listEl = document.getElementById('listCards');
+  listEl.innerHTML = '<div class="loading">加载中…</div>';
+  document.getElementById('listEmpty').style.display = 'none';
+  navigateTo('list');
+  return api('/messages?accountId=' + encodeURIComponent(accountId) + '&folderId=' + encodeURIComponent(folderId)).then(function (r) { return r.json(); }).then(function (md) {
+    var list = md.data || [];
+    var unread = list.filter(function (m) { return !m.read; }).length;
+    document.getElementById('metricUnread').textContent = unread;
+    if (!list.length) { listEl.innerHTML = ''; document.getElementById('listEmpty').style.display = 'block'; return; }
+    listEl.innerHTML = list.map(function (m) {
+      var from = joinAddrs(m.from);
+      var date = m.date ? new Date(m.date.replace(' ', 'T')).toLocaleString() : '';
+      var unreadDot = m.read ? '' : '<span class="badge-dot" title="未读"></span>';
+      var snippet = m.snippet ? '<div class="card-snippet">' + esc(m.snippet) + '</div>' : '';
+      return '<div class="card' + (m.read ? '' : ' unread') + '" data-message-id="' + esc(m.id) + '">' +
+        '<div class="card-title">' + esc(m.subject || '(无主题)') + unreadDot + '</div>' +
+        snippet +
+        '<div class="card-body">' + esc(from) + ' · ' + esc(date) + '</div>' +
+        '<div class="card-actions"><button class="btn primary small" data-open-message="' + esc(m.id) + '">查看</button></div>' +
+        '</div>';
+    }).join('');
+  }).catch(function () { toast('加载邮件失败'); });
+}
+
+/* ── 邮件详情（正文用沙箱 iframe 渲染，防 XSS 且不被转义） ── */
+function extractBody(m) {
+  var html = null, text = null;
+  if (m.html) {
+    if (typeof m.html === 'string') html = m.html;
+    else if (typeof m.html === 'object' && m.html.content != null) html = String(m.html.content);
+  }
+  if (!html && m.text != null) text = String(m.text);
+  else if (!html && m.body != null) text = String(m.body);
+  else if (!html && m.htmlBody != null) text = String(m.htmlBody);
+  return { html: html, text: text };
+}
+
+function openDetail(messageId) {
+  var box = document.getElementById('detailBox');
+  box.innerHTML = '<div class="loading">加载邮件…</div>';
+  navigateTo('detail');
+  api('/messages/' + encodeURIComponent(messageId) + '?accountId=' + encodeURIComponent(state.accountId)).then(function (r) { return r.json(); }).then(function (d) {
+    if (!d.ok) { box.innerHTML = '<div class="empty">加载失败：' + esc(d.error || '未知错误') + '</div>'; return; }
+    var m = d.data;
+    if (!m) { box.innerHTML = '<div class="empty">邮件不存在</div>'; return; }
+    var b = extractBody(m);
+    var head = '<div class="detail-head" data-message-id="' + esc(m.id) + '">' +
+      '<div class="detail-subject">' + esc(m.subject || '(无主题)') + '</div>' +
+      '<div class="detail-meta">' +
+      '<div><b>发件人</b> ' + esc(joinAddrs(m.from)) + '</div>' +
+      '<div><b>收件人</b> ' + esc(joinAddrs(m.to)) + '</div>' +
+      '<div><b>日期</b> ' + esc(m.date || '') + '</div>' +
+      '</div>' +
+      '<div class="card-actions">' +
+      '<button class="btn primary small" data-reply="' + esc(m.id) + '">回复</button>' +
+      '<button class="btn small" data-forward="' + esc(m.id) + '">转发</button>' +
+      '<button class="btn small" data-mark-read="' + esc(m.id) + '">✓ 标为已读</button>' +
+      '<button class="btn small" onclick="navigateTo(\'list\')">返回</button>' +
+      '</div></div>';
+    var bodyHtml;
+    if (b.html) {
+      bodyHtml = '<div class="mail-body-wrap"><iframe class="mail-body-frame" sandbox="allow-popups" title="邮件正文"></iframe></div>';
+    } else if (b.text) {
+      bodyHtml = '<div class="mail-body-text"></div>';
+    } else {
+      bodyHtml = '<div class="empty">（无正文）</div>';
+    }
+    var attHtml = attachmentsHtml(m.attachments);
+    box.innerHTML = head + bodyHtml + attHtml;
+    if (b.html) {
+      var f = box.querySelector('iframe.mail-body-frame');
+      // 把 cid: 内嵌图与外部 http(s) 图片都改写成可被沙箱 iframe 加载的地址
+      var frameHtml = rewriteImages(b.html, m.attachments, m.id);
+      f.srcdoc = injectBodyTheme(frameHtml);
+    } else if (b.text) {
+      box.querySelector('.mail-body-text').textContent = b.text;
+    }
+    // 自动标记已读（如果之前是未读）
+    if (m.read === false) {
+      markRead(m.id, true);
+    }
+  }).catch(function () { box.innerHTML = '<div class="empty">加载失败</div>'; });
+}
+
+// ── 主题注入到邮件正文 ─────────────────────────
+function injectBodyTheme(html) {
+  var dark = (document.body.dataset.hanaTheme === 'dark');
+  var palette = dark
+    ? { ink:'#e6dfd0', paper:'#352e25', accent:'#c86b56', link:'#d4bb7e', muted:'#b8ad99', chip:'rgba(255,255,255,.06)' }
+    : { ink:'#3a3226', paper:'#f7f1e3', accent:'#9c3d2e', link:'#7a2f22', muted:'#6b5e51', chip:'rgba(0,0,0,.04)' };
+  var css = [
+    'body{font-family:"Noto Serif SC","Songti SC","Microsoft YaHei",system-ui,sans-serif !important;color:' + palette.ink + ' !important;background:' + palette.paper + ' !important;line-height:1.7 !important;font-size:14px !important;}',
+    'body,body *{max-width:100% !important;}',
+    'a{color:' + palette.link + ' !important;}',
+    'a:visited{color:' + palette.link + ' !important;}',
+    'h1,h2,h3,h4,h5,h6{color:' + palette.ink + ' !important;font-family:inherit !important;}',
+    'img{max-width:100% !important;height:auto !important;}',
+    'table{border-collapse:collapse !important;max-width:100% !important;}',
+    'th,td{border:1px solid rgba(0,0,0,.08) !important;padding:4px 8px !important;}',
+    'pre,code{background:' + palette.chip + ' !important;border-radius:3px !important;padding:2px 5px !important;font-family:ui-monospace,Menlo,Consolas,monospace !important;}',
+    'blockquote{border-left:3px solid ' + palette.accent + ' !important;margin:8px 0 !important;padding:4px 10px !important;color:' + palette.muted + ' !important;background:' + palette.chip + ' !important;}',
+    'hr{border:none !important;border-top:1px dashed rgba(0,0,0,.2) !important;margin:14px 0 !important;}',
+    'button,input,select,textarea{font:inherit !important;}'
+  ].join('');
+  var styleBlock = '<style>' + css + '</style>';
+  if (/<head[^>]*>/i.test(html)) {
+    return html.replace(/<\/head>/i, styleBlock + '</head>');
+  }
+  if (/<\/body>/i.test(html)) {
+    return html.replace(/<\/body>/i, styleBlock + '</body>');
+  }
+  return styleBlock + html;
+}
+
+/* ── 写/回复/转发 ── */
+function openCompose(mode, original) {
+  document.getElementById('composeTitle').textContent = mode === 'reply' ? '回复邮件' : (mode === 'forward' ? '转发邮件' : '写邮件');
+  var to = '', subject = '', body = '';
+  if (mode === 'reply' && original) {
+    to = joinAddrs(original.from);
+    subject = /^re:/i.test(original.subject || '') ? original.subject : 'Re: ' + (original.subject || '');
+    body = '\n\n--- 原邮件 ---\n' + joinAddrs(original.from) + ' 写道：\n' + (original.text || original.subject || '');
+  } else if (mode === 'forward' && original) {
+    subject = /^fwd:/i.test(original.subject || '') ? original.subject : 'Fwd: ' + (original.subject || '');
+    body = '\n\n--- 转发邮件 ---\n发件人: ' + joinAddrs(original.from) + '\n主题: ' + (original.subject || '') + '\n\n' + (original.text || '');
+  }
+  document.getElementById('cmpTo').value = to;
+  document.getElementById('cmpSubject').value = subject;
+  document.getElementById('cmpBody').value = body;
+  document.getElementById('composeForm').dataset.mode = mode;
+  document.getElementById('composeForm').dataset.originalId = original ? original.id : '';
+  navigateTo('compose');
+}
+
+/* ── 标记已读 ── */
+function markRead(messageId, read) {
+  if (!state.accountId || !messageId) return Promise.resolve(null);
+  return api('/mark-read', {
+    method: 'POST',
+    body: JSON.stringify({ accountId: state.accountId, messageId: messageId, folder: state.folderId || 'INBOX' })
+  }).then(function (r) { return r.json(); }).then(function (d) {
+    if (d && d.ok) {
+      var card = document.querySelector('.card[data-message-id="' + cssEscape(messageId) + '"]');
+      if (card) card.classList.remove('unread');
+      // 折叠右侧未读小圆点
+      var dot = card && card.querySelector('.badge-dot');
+      if (dot) dot.parentNode.removeChild(dot);
+      // 顶部未读总数
+      var cards = document.querySelectorAll('.card.unread');
+      document.getElementById('metricUnread').textContent = cards.length;
+    }
+    return d;
+  }).catch(function () { return null; });
+}
+
+// ── 搜索 ──
+function runSearch(q) {
+  if (!state.accountId) { toast('请先选择账号'); return; }
+  var query = (q || '').trim();
+  var listEl = document.getElementById('listCards');
+  if (!query) { loadMessages(state.accountId, state.folderId); return; }
+  listEl.innerHTML = '<div class="loading">搜索中…</div>';
+  document.getElementById('listEmpty').style.display = 'none';
+  navigateTo('list');
+  document.getElementById('pageTitle').textContent = '搜索 "' + query + '"';
+  document.getElementById('pageSubtitle').textContent = '主题/发件人';
+  api('/search?accountId=' + encodeURIComponent(state.accountId) + '&q=' + encodeURIComponent(query)).then(function (r) { return r.json(); }).then(function (d) {
+    var list = (d && d.data) || [];
+    if (!list.length) { listEl.innerHTML = ''; document.getElementById('listEmpty').style.display = 'block'; document.getElementById('listEmpty').textContent = '没有匹配 "' + query + '" 的邮件'; return; }
+    listEl.innerHTML = list.map(function (m) {
+      var from = joinAddrs(m.from);
+      var date = m.date ? new Date(m.date.replace(' ', 'T')).toLocaleString() : '';
+      var unreadDot = m.read ? '' : '<span class="badge-dot" title="未读"></span>';
+      var snippet = m.snippet ? '<div class="card-snippet">' + esc(m.snippet) + '</div>' : '';
+      return '<div class="card' + (m.read ? '' : ' unread') + '" data-message-id="' + esc(m.id) + '">' +
+        '<div class="card-title">' + esc(m.subject || '(无主题)') + unreadDot + '</div>' +
+        snippet +
+        '<div class="card-body">' + esc(from) + ' · ' + esc(date) + '</div>' +
+        '<div class="card-actions"><button class="btn primary small" data-open-message="' + esc(m.id) + '">查看</button></div>' +
+        '</div>';
+    }).join('');
+  }).catch(function () { toast('搜索失败'); });
+}
+
+// CSS attribute 选择器转义（消息 id 含 : 和 +）
+function cssEscape(s) {
+  return String(s).replace(/["\\:\+\.\/]/g, function (c) { return '\\' + c; });
+}
+
+document.getElementById('searchBtn').onclick = function () {
+  runSearch(document.getElementById('searchInput').value);
+};
+document.getElementById('searchInput').addEventListener('keydown', function (e) {
+  if (e.key === 'Enter') { e.preventDefault(); runSearch(this.value); }
+});
+document.getElementById('searchClearBtn').onclick = function () {
+  document.getElementById('searchInput').value = '';
+  loadMessages(state.accountId, state.folderId);
+};
+
+document.getElementById('composeBtn').onclick = function () { openCompose('write', null); };
+document.getElementById('cmpCancel').onclick = function () { navigateTo('list'); };
+
+document.getElementById('composeForm').onsubmit = function (e) {
+  e.preventDefault();
+  var mode = this.dataset.mode;
+  var originalId = this.dataset.originalId;
+  var to = document.getElementById('cmpTo').value.trim();
+  var subject = document.getElementById('cmpSubject').value.trim();
+  var bodyText = document.getElementById('cmpBody').value;
+  if (!to || !subject || !bodyText) { toast('收件人、主题、正文都要填'); return; }
+  if (!state.accountId) { toast('请先选择账号'); return; }
+  toast('发送中…');
+  api('/send', { method: 'POST', body: JSON.stringify({
+    accountId: state.accountId, to: to, subject: subject, body: bodyText,
+    messageId: (mode === 'reply' && originalId) ? originalId : ''
+  }) }).then(function (r) { return r.json(); }).then(function (d) {
+    if (d && d.ok) { toast('已发送 ✦'); navigateTo('list'); }
+    else { toast('发送失败：' + (d && d.error ? d.error : '未知错误')); }
+  }).catch(function () { toast('发送失败'); });
+};
+
+/* ── 同步 ── */
+document.getElementById('syncBtn').onclick = function () {
+  if (!state.accountId) { toast('请先选择一个账号'); return; }
+  toast('正在同步…');
+  api('/sync', { method: 'POST', body: JSON.stringify({ accountId: state.accountId, folder: state.folderId }) }).then(function (r) { return r.json(); }).then(function (d) {
+    if (d && d.ok) {
+      toast('同步完成 ✦');
+      document.getElementById('syncStatus').textContent = '上次同步：' + new Date().toLocaleTimeString();
+      loadFolders(state.accountId);
+    } else {
+      toast('同步失败：' + (d && d.error ? d.error : '未知错误'));
+    }
+  }).catch(function () { toast('同步失败'); });
+};
+
+/* ── 全局点击委托 ── */
+document.addEventListener('click', function (e) {
+  var delAcct = e.target.closest('[data-del-acct]');
+  if (delAcct) {
+    e.stopPropagation();
+    api('/accounts', { method: 'POST', body: JSON.stringify({ action: 'delete', id: delAcct.getAttribute('data-del-acct') }) }).then(function () { return loadAccounts(); });
+    return;
+  }
+  var acct = e.target.closest('[data-acct]');
+  if (acct) { selectAccount(acct.getAttribute('data-acct')); return; }
+
+  var folder = e.target.closest('[data-folder]');
+  if (folder) { selectFolder(folder.getAttribute('data-folder')); return; }
+
+  var open = e.target.closest('[data-open-message]');
+  if (open) { openDetail(open.getAttribute('data-open-message')); return; }
+
+  var reply = e.target.closest('[data-reply]');
+  if (reply) {
+    var rid = reply.getAttribute('data-reply');
+    api('/messages/' + encodeURIComponent(rid) + '?accountId=' + encodeURIComponent(state.accountId)).then(function (r) { return r.json(); }).then(function (d) {
+      if (d.ok) openCompose('reply', d.data); else toast('读取原邮件失败');
+    });
+    return;
+  }
+  var fwd = e.target.closest('[data-forward]');
+  if (fwd) {
+    var fid = fwd.getAttribute('data-forward');
+    api('/messages/' + encodeURIComponent(fid) + '?accountId=' + encodeURIComponent(state.accountId)).then(function (r) { return r.json(); }).then(function (d) {
+      if (d.ok) openCompose('forward', d.data); else toast('读取原邮件失败');
+    });
+    return;
+  }
+  var mark = e.target.closest('[data-mark-read]');
+  if (mark) {
+    var mid = mark.getAttribute('data-mark-read');
+    markRead(mid, true).then(function (d) {
+      if (d && d.ok) {
+        var msg = (d.data && d.data.fallback)
+          ? '本地已标记 ✓（远端标记失败：可能缺少 mail-cli）'
+          : '已标记为已读 ✓';
+        toast(msg);
+        mark.textContent = '✓ 已读'; mark.disabled = true;
+      }
+      else { toast('标记失败：' + (d && d.error || '未知错误')); }
+    });
+    return;
+  }
+
+  var attPreview = e.target.closest('[data-att-preview]');
+  if (attPreview) {
+    var pid = attPreview.getAttribute('data-att-preview');
+    window.open(attachmentUrl(midForDetail(), pid, false), '_blank');
+    return;
+  }
+  var attDownload = e.target.closest('[data-att-download]');
+  if (attDownload) {
+    var did = attDownload.getAttribute('data-att-download');
+    var fname = attDownload.getAttribute('data-att-name') || 'attachment';
+    var a = document.createElement('a');
+    a.href = attachmentUrl(midForDetail(), did, true);
+    a.download = fname;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    return;
+  }
+});
+
+// 当前详情页的 messageId（从详情容器已有的数据中提取，回退到全局 state）
+function midForDetail() {
+  var box = document.getElementById('detailBox');
+  var el = box && box.querySelector('[data-message-id]');
+  return el ? el.getAttribute('data-message-id') : null;
+}
+
+/* ── 添加账号 ── */
+
+// 按 provider 切换可见的字段组
+window.updateAccountFields = function () {
+  var provider = document.getElementById('accProvider').value;
+  document.querySelectorAll('#accountFields .field-group').forEach(function (g) {
+    var providers = (g.getAttribute('data-for') || '').split(',');
+    g.style.display = providers.indexOf(provider) >= 0 ? '' : 'none';
+  });
+};
+
+(function () {
+  var form = document.getElementById('addAccountForm');
+  // 初始渲染
+  updateAccountFields();
+  form.onsubmit = function (e) {
+    e.preventDefault();
+    var name = document.getElementById('accName').value;
+    var email = document.getElementById('accEmail').value;
+    var provider = document.getElementById('accProvider').value;
+    if (!name || !email) { toast('请填写名称和邮箱'); return; }
+
+    var payload = { action: 'create', name: name, email: email, provider: provider };
+
+    // 按 provider 收集配置
+    if (provider === 'clawemail' || provider === 'agentqq') {
+      payload.apiKey = document.getElementById('accApiKey').value || '';
+    } else {
+      payload.config = {
+        imapHost: document.getElementById('accImapHost').value || '',
+        imapPort: Number(document.getElementById('accImapPort').value) || 993,
+        imapUser: document.getElementById('accImapUser').value || email,
+        imapPass: document.getElementById('accImapPass').value || '',
+        smtpHost: document.getElementById('accSmtpHost').value || '',
+        smtpPort: Number(document.getElementById('accSmtpPort').value) || 465,
+        smtpUser: document.getElementById('accSmtpUser').value || email,
+        smtpPass: document.getElementById('accSmtpPass').value || ''
+      };
+    }
+
+    api('/accounts', { method: 'POST', body: JSON.stringify(payload) }).then(function (r) { return r.json(); }).then(function (d) {
+      if (d && d.ok) {
+        toast('账号已保存 ✦');
+        form.reset(); updateAccountFields(); loadAccounts();
+      } else {
+        toast('保存失败：' + (d && d.error ? d.error : '未知错误'));
+      }
+    }).catch(function () { toast('保存失败'); });
+  };
+})();
+
+/* 启动 */
+loadAccounts();
+setTimeout(startPolling, 1000); // 等账号加载完开始轮询新邮件
+</script>
+</body>
+</html>
