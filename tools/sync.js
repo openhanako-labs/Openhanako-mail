@@ -40,8 +40,9 @@ function readWsCache(ctx, accountId) {
   const files = [];
   try {
     const entries = fs.readdirSync(cacheDir);
+    const prefix = `ws-${accountId}-`;
     for (const f of entries) {
-      if (f.startsWith(`ws-${accountId}-`) && f.endsWith(".json")) {
+      if (f.startsWith(prefix) && f.endsWith(".json")) {
         try {
           const content = JSON.parse(fs.readFileSync(path.join(cacheDir, f), "utf-8"));
           files.push(content);

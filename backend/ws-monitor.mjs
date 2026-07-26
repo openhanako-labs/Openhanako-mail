@@ -12,6 +12,7 @@ import { MailClient } from "@clawemail/node-sdk";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildFromEnv } from "./identity.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -19,6 +20,14 @@ function getDataDir() {
   // plugin-data 目录在 Hana 的数据根下，不在插件目录内
   const dataRoot = process.env.HANAKO_PLUGIN_DATA || path.join(process.env.USERPROFILE || "", ".hanako", "plugin-data", "hanako-mail", "hanako-mail");
   return dataRoot;
+}
+
+const LOG_PATH = path.join(getDataDir(), "ws-monitor.log");
+function log(level, msg, data) {
+  const ts = new Date().toISOString();
+  const line = data ? `[${ts}] [${level}] ${msg} ${JSON.stringify(data)}` : `[${ts}] [${level}] ${msg}`;
+  try { fs.appendFileSync(LOG_PATH, line + "\n"); } catch {}
+  console.log(line);
 }
 
 function getCacheDir() {
@@ -32,11 +41,12 @@ function ensureDir(p) {
 function saveMail(accountId, mail) {
   const cacheDir = getCacheDir();
   ensureDir(cacheDir);
-  const file = path.join(cacheDir, `ws-${accountId}-${mail.id}.json`);
+  const safeMailId = mail.id.replace(/:/g, "_");
+  const file = path.join(cacheDir, `ws-${accountId}-${safeMailId}.json`);
   try {
     fs.writeFileSync(file, JSON.stringify(mail, null, 2), "utf-8");
   } catch (e) {
-    console.warn("[ws-monitor] save mail failed", { mailId: mail.id, err: e.message });
+    log("WARN", "save mail failed", { mailId: mail.id, err: e.message });
   }
 }
 
@@ -63,52 +73,19 @@ function notifyDesktop(subject, sender, messageId, accountId) {
     const file = path.join(notifyDir, `${id}.json`);
     fs.writeFileSync(file, JSON.stringify({ subject, sender, messageId, accountId, createdAt: new Date().toISOString() }), "utf-8");
   } catch (e) {
-    console.warn("[ws-monitor] notify failed", { err: e.message });
+    log("WARN", "notify failed", { err: e.message });
   }
 }
 
-// 简易身份路由（从 email-monitor/identity.mjs 简化）
-function simpleIdentityRoute(fromStr, accountEmail) {
-  const lower = fromStr.toLowerCase();
-  const own = accountEmail.toLowerCase();
-  if (lower.includes(own)) return { identity: "self", isExternal: false, shouldAutoReply: false, requireReply: false };
-
-  // 内部联系人（可从环境变量扩展）
-  const internal = (process.env.EMAIL_INTERNAL_CONTACTS || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
-  for (const c of internal) { if (lower.includes(c)) return { identity: "internal", isExternal: false, shouldAutoReply: false, requireReply: false }; }
-
-  // 身份映射
-  const map = (process.env.EMAIL_IDENTITY_MAP || "").split(",").map(s => s.trim()).filter(Boolean);
-  for (const entry of map) {
-    const [addr, identity] = entry.split("=");
-    if (addr && identity && lower.includes(addr.toLowerCase())) {
-      return { identity, isExternal: false, shouldAutoReply: true, requireReply: false };
+let identityCache = null;
+function getAwareness() {
+  if (!identityCache) {
+    try { identityCache = buildFromEnv(); } catch (e) {
+      log("WARN", "identity 加载失败", { err: e.message });
+      identityCache = { route: () => ({ identity: "unknown", isExternal: true, shouldAutoReply: false, requireReply: false, autoTag: [] }), scrub: (t) => t, map: new Map() };
     }
   }
-
-  return { identity: "unknown", isExternal: true, shouldAutoReply: false, requireReply: false };
-}
-
-async function autoReply(client, accountEmail, mailId, email) {
-  try {
-    const fromArr = Array.isArray(email.from) ? email.from : [email.from || ""];
-    const fromStr = fromArr.join(" ");
-    const { identity, shouldAutoReply } = simpleIdentityRoute(fromStr, accountEmail);
-    if (!shouldAutoReply) return;
-
-    const subject = email.subject || "(无主题)";
-    const replyBody = `[自动回复] 收到你的邮件：${subject}\n\n（${identity}）`;
-
-    await client.mail.reply({
-      id: mailId,
-      body: replyBody,
-      html: false,
-      toAll: false,
-    });
-    console.log(`[ws-monitor] 自动回复已发送`, { mailId, to: fromStr });
-  } catch (e) {
-    console.error("[ws-monitor] 自动回复失败", { mailId, err: e.message });
-  }
+  return identityCache;
 }
 
 async function startAccount(account) {
@@ -122,9 +99,9 @@ async function startAccount(account) {
     apiKey: account.apiKey,
     user: account.email,
     logger: {
-      info: (msg, data) => console.log(`[ws-monitor][${accountId}] ${msg}`, data || ""),
-      warn: (msg, data) => console.warn(`[ws-monitor][${accountId}] ${msg}`, data || ""),
-      error: (msg, data) => console.error(`[ws-monitor][${accountId}] ${msg}`, data || ""),
+      info: (msg, data) => log("INFO", msg, data),
+      warn: (msg, data) => log("WARN", msg, data),
+      error: (msg, data) => log("ERROR", msg, data),
     },
   });
 
@@ -176,22 +153,22 @@ async function startAccount(account) {
       // 自动回复
       await autoReply(client, account.email, mailId, email);
 
-      console.log(`[ws-monitor][${accountId}] 新邮件已缓存`, { mailId, subject, from: fromStr });
+      log("INFO", "新邮件已缓存", { accountId, mailId, subject, from: fromStr });
     } catch (e) {
-      console.error(`[ws-monitor][${accountId}] 处理邮件失败`, { mailId, err: e.message });
+      log("ERROR", "处理邮件失败", { accountId, mailId, err: e.message });
     }
   });
 
   client.ws.onDisconnect(async (reason) => {
-    console.warn(`[ws-monitor][${accountId}] WebSocket 断开: ${reason}，5秒后重连...`);
+    log("WARN", `WebSocket 断开: ${reason}，5秒后重连...`);
     setTimeout(() => startAccount(account), 5000);
   });
 
   try {
     await client.ws.connect();
-    console.log(`[ws-monitor][${accountId}] ✅ WebSocket 已连接: ${account.email}`);
+    log("INFO", `WebSocket 已连接: ${account.email}`);
   } catch (e) {
-    console.error(`[ws-monitor][${accountId}] 连接失败: ${e.message}`);
+    log("ERROR", `连接失败: ${e.message}`);
     setTimeout(() => startAccount(account), 10000);
   }
 }
@@ -200,9 +177,20 @@ async function startAccount(account) {
 export async function startAll() {
   ensureDir(getDataDir());
   const accounts = loadAccounts();
+  log("INFO", "数据目录", getDataDir());
+  log("INFO", "账号数量", accounts.length);
   for (const account of accounts) {
+    log("INFO", "启动账号", account.email);
     try { await startAccount(account); } catch (e) {
-      console.error("[ws-monitor] 启动账号失败", { email: account.email, err: e.message });
+      log("ERROR", "启动账号失败", { email: account.email, err: e.message });
     }
   }
+}
+
+// 直接运行模式（被 index.js spawn 时执行）
+try {
+  log("INFO", "文件已加载");
+  await startAll();
+} catch (e) {
+  log("ERROR", "启动失败", e);
 }
