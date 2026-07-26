@@ -53,6 +53,35 @@ function readWsCache(ctx, accountId) {
   return files;
 }
 
+function readEmailMonitorData(accountEmail) {
+  const base = path.join("W:\\", "Games", "Hanako", "Work", "projects", "email-monitor", "data");
+  const files = [];
+  try {
+    const processedPath = path.join(base, "_processed_default.json");
+    let processed = [];
+    try { processed = JSON.parse(fs.readFileSync(processedPath, "utf-8")); } catch {}
+    for (const mailId of processed) {
+      const safeId = mailId.replace(/:/g, "_");
+      const emailPath = path.join(base, safeId, "email.json");
+      try {
+        const content = JSON.parse(fs.readFileSync(emailPath, "utf-8"));
+        if (content.to && content.to.some(t => t && t.includes(accountEmail))) {
+          files.push({
+            id: content.mailId || mailId,
+            from: content.from && content.from[0] ? content.from[0] : "",
+            subject: content.subject || "(无主题)",
+            date: content.date || "",
+            size: 0,
+            read: true,
+            platform: "email-monitor",
+          });
+        }
+      } catch {}
+    }
+  } catch {}
+  return files;
+}
+
 export const name = "mail_sync";
 export const description = "同步邮箱文件夹";
 
@@ -106,6 +135,21 @@ export async function execute(input, ctx) {
           }
         }
         messages = Array.from(byId.values()).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+      }
+
+      // 如果 REST API 返回的还是旧数据，补充 email-monitor 本地存档
+      if (messages.length === 0 || (messages.length > 0 && messages[0].date && messages[0].date < "2026-07-01")) {
+        const monitorMails = readEmailMonitorData(account.email);
+        if (monitorMails.length) {
+          const byId = new Map(messages.map(m => [m.id, m]));
+          for (const m of monitorMails) {
+            if (!byId.has(m.id)) {
+              byId.set(m.id, m);
+            }
+          }
+          messages = Array.from(byId.values()).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+          ctx.log?.info?.("mail_sync.monitor_fallback", { count: monitorMails.length });
+        }
       }
     }
 
