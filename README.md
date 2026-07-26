@@ -63,4 +63,4 @@ hanako-mail/
 
 ## License
 
-MIT
+AGPL-3.0
