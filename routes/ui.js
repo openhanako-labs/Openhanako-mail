@@ -3,20 +3,48 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
-import { mapType, defaultFolders } from "./backend/common.mjs";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// 兼容 dev 加载：如果 __dirname 指向源目录，尝试用插件上下文解析
+const DEVICES = new Set(["C", "D", "E", "W"]);
+function isDevSymlink(dir) {
+  const root = dir.split(path.sep).slice(0, 3).join(path.sep).toUpperCase();
+  return DEVICES.has(root[0]) && root.includes(".hanako\\plugins-dev");
+}
+
+// Fallback mapType（当 ESM import 失败时使用）
+function _mapTypeFallback(name) {
+  const n = name.toLowerCase();
+  if (n.includes("inbox") || n === "收件箱") return "inbox";
+  if (n.includes("sent") || n.includes("已发送")) return "sent";
+  if (n.includes("draft") || n.includes("草稿")) return "drafts";
+  if (n.includes("trash") || n.includes("已删除")) return "trash";
+  if (n.includes("spam") || n.includes("垃圾")) return "spam";
+  return "custom";
+}
+
+function _defaultFoldersFallback(accountId) {
+  return [
+    { id: "INBOX", accountId, name: "收件箱", path: "INBOX", type: "inbox", unreadCount: 0, totalCount: 0 },
+    { id: "Sent", accountId, name: "已发送", path: "Sent", type: "sent", unreadCount: 0, totalCount: 0 },
+    { id: "Drafts", accountId, name: "草稿", path: "Drafts", type: "drafts", unreadCount: 0, totalCount: 0 },
+    { id: "Trash", accountId, name: "已删除", path: "Trash", type: "trash", unreadCount: 0, totalCount: 0 },
+    { id: "Spam", accountId, name: "垃圾邮件", path: "Spam", type: "spam", unreadCount: 0, totalCount: 0 },
+  ];
+}
 
 // 子进程脚本：在 Hana 服务器被拦截的 global fetch 之外，以独立进程拉取外网图片。
-const PROXY_FETCH_SCRIPT = path.join(
-  path.dirname(fileURLToPath(import.meta.url)), "..", "assets", "_proxy-fetch.cjs"
-);
-const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const EMAIL_MONITOR_ROOT = path.join(PLUGIN_ROOT, "backend");
-const INBOX_PATH = path.join(EMAIL_MONITOR_ROOT, "inbox.mjs");
+const PROXY_FETCH_SCRIPT = path.join(__dirname, "..", "assets", "_proxy-fetch.cjs");
+const PLUGIN_ROOT = path.resolve(__dirname, "..");
+const BACKEND_DIR = path.join(PLUGIN_ROOT, "backend");
+const INBOX_PATH = path.join(BACKEND_DIR, "inbox.mjs");
 
 async function runInbox(args) {
   return new Promise((resolve, reject) => {
     const proc = execFile(process.execPath, [INBOX_PATH, ...args], {
-      cwd: EMAIL_MONITOR_ROOT,
+      cwd: BACKEND_DIR,
       encoding: "utf-8",
       windowsHide: true,
     }, (err, stdout, stderr) => {
@@ -275,7 +303,7 @@ export default function (app, ctx) {
           accountId,
           name: f.name ?? f.id ?? "",
           path: String(f.id ?? f.name ?? ""),
-          type: mapType(String(f.name ?? f.id ?? "")),
+          type: _mapTypeFallback(String(f.name ?? f.id ?? "")),
           unreadCount: Number(f.unread ?? 0),
           totalCount: Number(f.unread ?? 0),
         }));
