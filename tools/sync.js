@@ -45,7 +45,10 @@ function readWsCache(ctx, accountId) {
       if (f.startsWith(prefix) && f.endsWith(".json")) {
         try {
           const content = JSON.parse(fs.readFileSync(path.join(cacheDir, f), "utf-8"));
-          files.push(content);
+          files.push({
+            ...content,
+            id: content.mailId || content.id || f,
+          });
         } catch {}
       }
     }
@@ -57,17 +60,16 @@ function readEmailMonitorData(accountEmail) {
   const base = path.join("W:\\", "Games", "Hanako", "Work", "projects", "email-monitor", "data");
   const files = [];
   try {
-    const processedPath = path.join(base, "_processed_default.json");
-    let processed = [];
-    try { processed = JSON.parse(fs.readFileSync(processedPath, "utf-8")); } catch {}
-    for (const mailId of processed) {
-      const safeId = mailId.replace(/:/g, "_");
-      const emailPath = path.join(base, safeId, "email.json");
+    const entries = fs.readdirSync(base);
+    for (const entry of entries) {
+      const emailPath = path.join(base, entry, "email.json");
+      if (!fs.existsSync(emailPath)) continue;
       try {
         const content = JSON.parse(fs.readFileSync(emailPath, "utf-8"));
-        if (content.to && content.to.some(t => t && t.includes(accountEmail))) {
+        const toList = Array.isArray(content.to) ? content.to : [content.to || ""];
+        if (toList.some(t => t && t.includes(accountEmail))) {
           files.push({
-            id: content.mailId || mailId,
+            id: content.mailId || entry,
             from: content.from && content.from[0] ? content.from[0] : "",
             subject: content.subject || "(无主题)",
             date: content.date || "",
