@@ -1,18 +1,19 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
-import { normalizeFolder, defaultFolders } from "../backend/common.mjs";
+import { normalizeFolder, defaultFolders, inboxEnvFor } from "../backend/common.mjs";
 
 const BACKEND_DIR = path.join(path.dirname(path.dirname(import.meta.url)), "backend");
 const INBOX_PATH = path.join(BACKEND_DIR, "inbox.mjs");
 
-async function runInbox(args) {
+async function runInbox(args, extraEnv = {}) {
   return new Promise((resolve, reject) => {
     const proc = execFile(process.execPath, [INBOX_PATH, ...args], {
       cwd: BACKEND_DIR,
       encoding: "utf-8",
       windowsHide: true,
       maxBuffer: 50 * 1024 * 1024,
+      env: { ...process.env, ...extraEnv },
     }, (err, stdout, stderr) => {
       if (err) return reject(new Error(`${err.message}: ${stderr}`));
       try {
@@ -56,18 +57,19 @@ export async function execute(input, ctx) {
 
   const account = resolveAccount(ctx, accountId);
   if (!account) return { ok: false, error: "account not found" };
+  const extraEnv = inboxEnvFor(account);
 
   try {
     let folders = [];
     try {
-      const foldersRaw = await runInbox(["folders", account.email]);
+      const foldersRaw = await runInbox(["folders", account.email], extraEnv);
       folders = (Array.isArray(foldersRaw) ? foldersRaw : []).map(f => normalizeFolder(f, accountId));
     } catch (e) {
       ctx.log?.warn?.("mail_sync.folders_fallback", { error: e.message });
       folders = defaultFolders(accountId);
     }
 
-    const messagesRaw = await runInbox(["list", account.email, `--fid=${folder}`, "--limit=50"]);
+    const messagesRaw = await runInbox(["list", account.email, `--fid=${folder}`, "--limit=50"], extraEnv);
     const messages = Array.isArray(messagesRaw) ? messagesRaw : [];
 
     fs.writeFileSync(path.join(dataDir, `folders-${accountId}.json`), JSON.stringify(folders, null, 2), "utf-8");

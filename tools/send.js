@@ -1,17 +1,19 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
+import { inboxEnvFor } from "../backend/common.mjs";
 
 const BACKEND_DIR = path.join(path.dirname(path.dirname(import.meta.url)), "backend");
 const INBOX_PATH = path.join(BACKEND_DIR, "inbox.mjs");
 
-async function runInbox(args) {
+async function runInbox(args, extraEnv = {}) {
   return new Promise((resolve, reject) => {
     const proc = execFile(process.execPath, [INBOX_PATH, ...args], {
       cwd: BACKEND_DIR,
       encoding: "utf-8",
       windowsHide: true,
       maxBuffer: 50 * 1024 * 1024,
+      env: { ...process.env, ...extraEnv },
     }, (err, stdout, stderr) => {
       if (err) return reject(new Error(`${err.message}: ${stderr}`));
       try {
@@ -57,15 +59,16 @@ export async function execute(input, ctx) {
 
   const account = resolveAccount(ctx, accountId);
   if (!account) return { ok: false, error: "account not found" };
+  const extraEnv = inboxEnvFor(account);
 
   try {
     if (messageId) {
-      const result = await runInbox(["reply", account.email, messageId, `--body=${body}`]);
+      const result = await runInbox(["reply", account.email, messageId, `--body=${body}`], extraEnv);
       if (result.error) return { ok: false, error: result.error };
       return { ok: true, data: result };
     }
 
-    const result = await runInbox(["send", account.email, `--to=${to}`, `--subject=${subject}`, `--body=${body}`]);
+    const result = await runInbox(["send", account.email, `--to=${to}`, `--subject=${subject}`, `--body=${body}`], extraEnv);
     if (result.error) return { ok: false, error: result.error };
     return { ok: true, data: result };
   } catch (e) {

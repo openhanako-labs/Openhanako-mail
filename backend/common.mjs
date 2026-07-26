@@ -50,3 +50,27 @@ export function defaultFolders(accountId) {
     { id: "Spam", accountId, name: "垃圾邮件", path: "Spam", type: "spam", unreadCount: 0, totalCount: 0 },
   ];
 }
+
+/**
+ * 构建 inbox.mjs 子进程所需的环境变量。
+ * 将 account 中的 apiKey/email/IMAP 配置透传给后端。
+ * @param {{apiKey?:string,email?:string,config?:object}} account
+ * @returns {object}
+ */
+export function inboxEnvFor(account) {
+  const env = {};
+  if (account && account.apiKey) env.CLAWEMAIL_API_KEY = account.apiKey;
+  if (account && account.email) env.CLAWEMAIL_ADDRESS = account.email;
+  if (account && account.config) {
+    const c = account.config;
+    if (c.imapHost) env.IMAP_HOST = c.imapHost;
+    if (c.imapPort) env.IMAP_PORT = String(c.imapPort);
+    if (c.imapUser) env.IMAP_USER = c.imapUser;
+    if (c.imapPass) env.IMAP_PASS = c.imapPass;
+    if (c.smtpHost) env.SMTP_HOST = c.smtpHost;
+    if (c.smtpPort) env.SMTP_PORT = String(c.smtpPort);
+    if (c.smtpUser) env.SMTP_USER = c.smtpUser;
+    if (c.smtpPass) env.SMTP_PASS = c.smtpPass;
+  }
+  return env;
+}
