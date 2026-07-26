@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BACKEND_DIR = path.join(__dirname, "backend");
+const DATA_DIR = path.join(BACKEND_DIR, "data");
 
 function checkDeps() {
   const missing = [];
@@ -22,8 +23,12 @@ function checkDeps() {
   return missing;
 }
 
+function ensureDataDir() {
+  try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
+}
+
 function autoInstallDeps() {
-  const lockFile = path.join(BACKEND_DIR, "node_modules", ".hanako-auto-install.lock");
+  const lockFile = path.join(DATA_DIR, ".hanako-auto-install.lock");
   if (fs.existsSync(lockFile)) return; // 已在安装中或已安装过
 
   const missing = checkDeps();
@@ -63,6 +68,7 @@ export default class HanakoMailPlugin {
     const ctx = this.ctx;
     ctx.log?.info?.("hanako-mail loaded", { pluginId: ctx.pluginId });
 
+    ensureDataDir();
     const missing = checkDeps();
     if (missing.length > 0) {
       ctx.log?.warn?.("hanako-mail: 后端依赖缺失，尝试自动安装", { missing });
