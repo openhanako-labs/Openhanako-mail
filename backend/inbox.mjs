@@ -31,7 +31,10 @@ const DATA_DIR = path.join(__dirname, "data");
 const PENDING_SEND_DIR = path.join(DATA_DIR, "_pending_send");
 const ENV_PATH = path.join(__dirname, ".env");
 
-// ── 加载 .env ──────────────────────────────────────────
+// ── 加载 .env（兜底） ──────────────────────────────────
+// 仅当变量尚未在 process.env 中时填充，因此优先级为：
+//   1) 调用方透传的环境变量（来自 accounts.json 的 apiKey，由 routes/ui.js 经 CLAWEMAIL_API_KEY 传入）
+//   2) backend/.env 文件（可选兜底）
 
 function loadEnv() {
   if (!fs.existsSync(ENV_PATH)) return;
@@ -67,7 +70,7 @@ function selectBackend(email) {
 function resolveAccountConfig(email) {
   const apiKey = process.env.CLAWEMAIL_API_KEY;
   if (!apiKey) {
-    throw new Error("CLAWEMAIL_API_KEY not set in .env");
+    throw new Error("CLAWEMAIL_API_KEY not set — 请在 account 中填写 apiKey（accounts.json），或在 backend/.env 中配置兜底。");
   }
   return {
     backend: selectBackend(email),

@@ -65,9 +65,14 @@ function runMailCli(args, timeout = 15000) {
 }
 
 // ── MailClient 工厂（带连接池，避免重复鉴权） ────────────
+// 凭据来源：CLAWEMAIL_API_KEY / CLAWEMAIL_ADDRESS 来自 process.env。
+// 这两个值由 routes/ui.js 在拉起 inbox.mjs 子进程时从 accounts.json 的 account.apiKey / account.email
+// 经环境变量透传；backend/.env 仅作为可选兜底（inbox.mjs 的 loadEnv 仅在缺失时填充）。
 const clientPool = new Map();
 
 async function getClient(apiKey, user) {
+  apiKey = apiKey || process.env.CLAWEMAIL_API_KEY;
+  user = user || process.env.CLAWEMAIL_ADDRESS;
   const key = `${apiKey}:${user}`;
   if (!clientPool.has(key)) {
     clientPool.set(key, new (await loadMailClient())({

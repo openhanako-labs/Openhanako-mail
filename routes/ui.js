@@ -41,12 +41,13 @@ const PLUGIN_ROOT = path.resolve(__dirname, "..");
 const BACKEND_DIR = path.join(PLUGIN_ROOT, "backend");
 const INBOX_PATH = path.join(BACKEND_DIR, "inbox.mjs");
 
-async function runInbox(args) {
+async function runInbox(args, extraEnv = {}) {
   return new Promise((resolve, reject) => {
     const proc = execFile(process.execPath, [INBOX_PATH, ...args], {
       cwd: BACKEND_DIR,
       encoding: "utf-8",
       windowsHide: true,
+      env: { ...process.env, ...extraEnv },
     }, (err, stdout, stderr) => {
       if (err) return reject(new Error(`${err.message}: ${stderr}`));
       try {
@@ -60,6 +61,15 @@ async function runInbox(args) {
 
 function resolveAccount(accountsList, accountId) {
   return accountsList.find(a => a.id === accountId);
+}
+
+// 将 account 的 apiKey / email 透传给后端子进程。
+// 这样 CLAWEMAIL_API_KEY 来自 accounts.json，backend/.env 仅作兜底（子进程 loadEnv 仅在缺失时填充）。
+function inboxEnvFor(account) {
+  const env = {};
+  if (account && account.apiKey) env.CLAWEMAIL_API_KEY = account.apiKey;
+  if (account && account.email) env.CLAWEMAIL_ADDRESS = account.email;
+  return env;
 }
 
 // ── 摘要提取 ────────────────────────────────────────────
@@ -109,7 +119,7 @@ async function batchFetchSnippets(account, messages, topN = 12) {
   if (!need.length) return messages;
   const out = await Promise.all(need.map(async (m) => {
     try {
-      const r = await runInbox(["read", account.email, m.id]);
+      const r = await runInbox(["read", account.email, m.id], inboxEnvFor(account));
       return snippetFrom(r);
     } catch (e) {
       return "";
@@ -275,7 +285,7 @@ export default function (app, ctx) {
     if (!account) return c.json({ ok: false, error: "account not found" });
 
     try {
-      const result = await runInbox(["read", account.email, messageId]);
+      const result = await runInbox(["read", account.email, messageId], inboxEnvFor(account));
       if (result.error) return c.json({ ok: false, error: result.error });
       return c.json({ ok: true, data: result });
     } catch (e) {
@@ -311,7 +321,7 @@ export default function (app, ctx) {
     try {
       let folders = [];
       try {
-        const foldersRaw = await runInbox(["folders", account.email]);
+        const foldersRaw = await runInbox(["folders", account.email], inboxEnvFor(account));
         folders = (Array.isArray(foldersRaw) ? foldersRaw : []).map(f => ({
           id: String(f.id ?? f.name ?? ""),
           accountId,
@@ -326,7 +336,7 @@ export default function (app, ctx) {
         folders = _defaultFoldersFallback(accountId);
       }
 
-      const messagesRaw = await runInbox(["list", account.email, `--fid=${folder}`, "--limit=50"]);
+      const messagesRaw = await runInbox(["list", account.email, `--fid=${folder}`, "--limit=50"], inboxEnvFor(account));
       const messages = Array.isArray(messagesRaw) ? messagesRaw : [];
 
       // 摘要：复用上次缓存的，并行补抓前 N 条未缓存的
@@ -361,9 +371,9 @@ export default function (app, ctx) {
     try {
       let result;
       if (messageId) {
-        result = await runInbox(["reply", account.email, messageId, `--body=${text}`]);
+        result = await runInbox(["reply", account.email, messageId, `--body=${text}`], inboxEnvFor(account));
       } else {
-        result = await runInbox(["send", account.email, `--to=${to}`, `--subject=${subject}`, `--body=${text}`]);
+        result = await runInbox(["send", account.email, `--to=${to}`, `--subject=${subject}`, `--body=${text}`], inboxEnvFor(account));
       }
       if (result.error) return c.json({ ok: false, error: result.error });
       return c.json({ ok: true, data: result });
@@ -401,7 +411,7 @@ export default function (app, ctx) {
     }
 
     try {
-      const result = await runInbox(["mark-read", account.email, messageId]);
+      const result = await runInbox(["mark-read", account.email, messageId], inboxEnvFor(account));
       if (result && result.error) {
         updateLocalRead();
         return c.json({ ok: true, data: { fallback: true, reason: String(result.error).slice(0, 200) } });
@@ -429,7 +439,7 @@ export default function (app, ctx) {
       }
     }
     try {
-      const result = await runInbox(["search", account.email, q]);
+      const result = await runInbox(["search", account.email, q], inboxEnvFor(account));
       if (result && result.error) return c.json({ ok: false, error: result.error });
       const list = Array.isArray(result) ? result : [];
       // 也补一下摘要，便于结果卡复用
@@ -458,7 +468,7 @@ export default function (app, ctx) {
       }
     }
     try {
-      const r = await runInbox(["attachment", account.email, messageId, partId]);
+      const r = await runInbox(["attachment", account.email, messageId, partId], inboxEnvFor(account));
       if (r && r.error) return c.json({ ok: false, error: String(r.error) }, 400);
       if (!r || !r.base64) return c.json({ ok: false, error: "attachment not found" }, 404);
       const buf = Buffer.from(r.base64, "base64");
