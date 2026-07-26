@@ -1,7 +1,0 @@
-Modify hanako-mail plugin to use apiKey from accounts.json instead of requiring backend/.env.
-
-Steps:
-1) routes/ui.js: pass CLAWEMAIL_API_KEY from account.apiKey via runInbox extraEnv to all backend calls (postSync/postSend/postMarkRead/getSearch/getAttachment).
-2) backend/inbox.mjs: make loadEnv optional, prefer account apiKey over .env.
-3) backend/clawemail-backend.mjs: prefer process.env.CLAWEMAIL_API_KEY, fallback to parameter apiKey.
-Keep .env as fallback only. Edit source files directly.
