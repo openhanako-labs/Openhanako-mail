@@ -1,24 +1,6 @@
-# Dependencies
+node_modules/
 backend/node_modules/
-helper/MailToastHelper/bin/
-helper/MailToastHelper/obj/
-helper/bin/*.dll
-helper/bin/*.pdb
-
-# Data & Cache
-backend/data/
-*.local
+helper/node_modules/
+assets/plugin-page-template.html
+*.log
 .env
-
-# IDE
-.vscode/
-.idea/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Build artifacts
-*.exe
-*.dll
-*.pdb

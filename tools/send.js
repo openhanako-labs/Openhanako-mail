@@ -2,12 +2,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
 
-const INBOX_PATH = path.join(path.dirname(path.dirname(import.meta.url)), "backend", "inbox.mjs");
+const BACKEND_DIR = path.join(path.dirname(path.dirname(import.meta.url)), "backend");
+const INBOX_PATH = path.join(BACKEND_DIR, "inbox.mjs");
 
 async function runInbox(args) {
   return new Promise((resolve, reject) => {
     const proc = execFile(process.execPath, [INBOX_PATH, ...args], {
-      cwd: EMAIL_MONITOR_ROOT,
+      cwd: BACKEND_DIR,
       encoding: "utf-8",
       windowsHide: true,
     }, (err, stdout, stderr) => {
@@ -33,6 +34,18 @@ function resolveAccount(ctx, accountId) {
 
 export const name = "mail_send";
 export const description = "发送邮件";
+
+export const parameters = {
+  type: "object",
+  properties: {
+    accountId: { type: "string", description: "账号 ID" },
+    to: { type: "string", description: "收件人邮箱地址" },
+    subject: { type: "string", description: "邮件主题" },
+    body: { type: "string", description: "邮件正文" },
+    messageId: { type: "string", description: "回复的邮件 ID（可选，传此参数时回复邮件）" },
+  },
+  required: ["accountId", "to", "subject", "body"],
+};
 
 export async function execute(input, ctx) {
   const { accountId, to, subject, body, messageId } = input || {};

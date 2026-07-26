@@ -3,12 +3,13 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { normalizeFolder, defaultFolders } from "../backend/common.mjs";
 
-const INBOX_PATH = path.join(path.dirname(path.dirname(import.meta.url)), "backend", "inbox.mjs");
+const BACKEND_DIR = path.join(path.dirname(path.dirname(import.meta.url)), "backend");
+const INBOX_PATH = path.join(BACKEND_DIR, "inbox.mjs");
 
 async function runInbox(args) {
   return new Promise((resolve, reject) => {
     const proc = execFile(process.execPath, [INBOX_PATH, ...args], {
-      cwd: EMAIL_MONITOR_ROOT,
+      cwd: BACKEND_DIR,
       encoding: "utf-8",
       windowsHide: true,
     }, (err, stdout, stderr) => {
@@ -24,6 +25,14 @@ async function runInbox(args) {
 
 export const name = "mail_folders";
 export const description = "获取账号文件夹列表";
+
+export const parameters = {
+  type: "object",
+  properties: {
+    accountId: { type: "string", description: "账号 ID" },
+  },
+  required: ["accountId"],
+};
 
 export async function execute(input, ctx) {
   const accountId = input?.accountId || "";

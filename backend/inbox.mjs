@@ -25,6 +25,7 @@ import { fileURLToPath } from "node:url";
 import { buildFromEnv } from "./identity.mjs";
 import * as clawemail from "./clawemail-backend.mjs";
 import * as agentqq from "./agentqq-backend.mjs";
+import * as imap from "./imap-backend.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, "data");
@@ -64,19 +65,24 @@ function selectBackend(email) {
   const lower = email.toLowerCase();
   if (lower.endsWith("@claw.163.com")) return "clawemail";
   if (lower.endsWith("@agent.qq.com")) return "agentqq";
-  throw new Error(`selectBackend: unknown domain for ${email}`);
+  // 其他域名走 IMAP/SMTP
+  return "imap";
 }
 
 function resolveAccountConfig(email) {
+  const backend = selectBackend(email);
+  if (backend === "imap") {
+    const imapPass = process.env.IMAP_PASS || process.env.SMTP_PASS;
+    if (!imapPass) {
+      throw new Error("IMAP_PASS not set — 个人邮箱需要 IMAP/SMTP 授权码。请在账号配置中填写。");
+    }
+    return { backend, email };
+  }
   const apiKey = process.env.CLAWEMAIL_API_KEY;
   if (!apiKey) {
     throw new Error("CLAWEMAIL_API_KEY not set — 请在 account 中填写 apiKey（accounts.json），或在 backend/.env 中配置兜底。");
   }
-  return {
-    backend: selectBackend(email),
-    email,
-    apiKey,
-  };
+  return { backend, email, apiKey };
 }
 
 const accountCache = new Map();
@@ -139,6 +145,9 @@ export async function listMessages(accountEmail, options = {}) {
   if (config.backend === "clawemail") {
     return await clawemail.listMessages(options.fid || "1", options);
   }
+  if (config.backend === "imap") {
+    return await imap.listMessages(accountEmail, options);
+  }
   return await agentqq.listMessages(options);
 }
 
@@ -146,6 +155,16 @@ export async function searchMessages(accountEmail, keyword, options = {}) {
   const config = getAccount(accountEmail);
   if (config.backend === "clawemail") {
     return await clawemail.searchMessages(keyword, options);
+  }
+  if (config.backend === "imap") {
+    // IMAP 搜索回退到全量列表后过滤
+    const all = await imap.listMessages(accountEmail, { limit: 100 });
+    const kw = keyword.toLowerCase();
+    return all.filter(m => {
+      const s = (m.subject || "").toLowerCase();
+      const f = (m.from || "").toLowerCase();
+      return s.includes(kw) || f.includes(kw);
+    });
   }
   return await agentqq.searchMessages(keyword, options);
 }
@@ -155,6 +174,9 @@ export async function readMessage(accountEmail, messageId, options = {}) {
   if (config.backend === "clawemail") {
     return await clawemail.readMessage(config.apiKey, accountEmail, messageId, options);
   }
+  if (config.backend === "imap") {
+    return await imap.readMessage(accountEmail, messageId, options);
+  }
   return await agentqq.readMessage(messageId);
 }
 
@@ -163,11 +185,12 @@ export async function downloadAttachment(accountEmail, messageId, partId, output
   if (config.backend === "clawemail") {
     return await clawemail.downloadAttachment(config.apiKey, accountEmail, messageId, partId, outputDir);
   }
+  if (config.backend === "imap") {
+    throw new Error("downloadAttachment: IMAP backend attachment download not yet implemented");
+  }
   return await agentqq.downloadAttachment(messageId, partId, outputDir);
 }
 
-// 读取附件内容（base64 编码，便于通过 JSON 在子进程间传递）。
-// 供插件后端以 HTTP 方式把附件回传给前端预览/下载。
 export async function getAttachmentData(accountEmail, messageId, partId) {
   const config = getAccount(accountEmail);
   if (config.backend === "clawemail") {
@@ -178,6 +201,9 @@ export async function getAttachmentData(accountEmail, messageId, partId) {
       size: r.size,
       base64: r.buffer.toString("base64"),
     };
+  }
+  if (config.backend === "imap") {
+    throw new Error("getAttachmentData: IMAP backend attachment serving not yet implemented");
   }
   throw new Error("getAttachmentData: AgentQQ backend does not support attachment serving yet");
 }
@@ -193,6 +219,8 @@ export async function sendMail(accountEmail, options, context = {}) {
   let result;
   if (config.backend === "clawemail") {
     result = await clawemail.sendMail(config.apiKey, accountEmail, options);
+  } else if (config.backend === "imap") {
+    result = await imap.sendMail(accountEmail, options);
   } else {
     result = await agentqq.sendMail(options);
   }
@@ -217,6 +245,8 @@ export async function reply(accountEmail, messageId, options = {}) {
   let result;
   if (config.backend === "clawemail") {
     result = await clawemail.replyToMail(config.apiKey, accountEmail, messageId, options);
+  } else if (config.backend === "imap") {
+    result = await imap.replyToMail(accountEmail, messageId, options);
   } else {
     result = await agentqq.replyToMail(messageId, options);
   }
@@ -241,6 +271,8 @@ export async function forward(accountEmail, messageId, options = {}) {
   let result;
   if (config.backend === "clawemail") {
     throw new Error("forward: ClawEmail backend does not support forward. Use reply or send instead.");
+  } else if (config.backend === "imap") {
+    throw new Error("forward: IMAP backend does not support forward yet");
   } else {
     result = await agentqq.forwardMail(messageId, options);
   }
@@ -252,6 +284,9 @@ export async function moveMessage(accountEmail, messageId, targetFid) {
   if (config.backend === "clawemail") {
     return await clawemail.moveMessage(messageId, targetFid);
   }
+  if (config.backend === "imap") {
+    throw new Error("moveMessage: IMAP backend move not implemented");
+  }
   throw new Error("moveMessage: AgentQQ backend move not implemented (CLI limitation)");
 }
 
@@ -260,6 +295,9 @@ export async function markRead(accountEmail, messageId, read = true) {
   if (config.backend === "clawemail") {
     return await clawemail.markRead(messageId, read);
   }
+  if (config.backend === "imap") {
+    return await imap.markRead(accountEmail, messageId, read);
+  }
   return await agentqq.markRead(messageId, read);
 }
 
@@ -267,6 +305,9 @@ export async function listFolders(accountEmail) {
   const config = getAccount(accountEmail);
   if (config.backend === "clawemail") {
     return await clawemail.listFolders();
+  }
+  if (config.backend === "imap") {
+    return await imap.listFolders(accountEmail);
   }
   return await agentqq.listFolders();
 }

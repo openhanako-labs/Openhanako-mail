@@ -63,12 +63,24 @@ function resolveAccount(accountsList, accountId) {
   return accountsList.find(a => a.id === accountId);
 }
 
-// 将 account 的 apiKey / email 透传给后端子进程。
+// 将 account 的 apiKey / email / IMAP 配置透传给后端子进程。
 // 这样 CLAWEMAIL_API_KEY 来自 accounts.json，backend/.env 仅作兜底（子进程 loadEnv 仅在缺失时填充）。
+// 个人邮箱的 IMAP 配置也通过环境变量透传。
 function inboxEnvFor(account) {
   const env = {};
   if (account && account.apiKey) env.CLAWEMAIL_API_KEY = account.apiKey;
   if (account && account.email) env.CLAWEMAIL_ADDRESS = account.email;
+  // 个人邮箱 IMAP 配置
+  if (account && account.config) {
+    if (account.config.imapHost) env.IMAP_HOST = account.config.imapHost;
+    if (account.config.imapPort) env.IMAP_PORT = String(account.config.imapPort);
+    if (account.config.imapUser) env.IMAP_USER = account.config.imapUser;
+    if (account.config.imapPass) env.IMAP_PASS = account.config.imapPass;
+    if (account.config.smtpHost) env.SMTP_HOST = account.config.smtpHost;
+    if (account.config.smtpPort) env.SMTP_PORT = String(account.config.smtpPort);
+    if (account.config.smtpUser) env.SMTP_USER = account.config.smtpUser;
+    if (account.config.smtpPass) env.SMTP_PASS = account.config.smtpPass;
+  }
   return env;
 }
 

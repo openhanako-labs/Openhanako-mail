@@ -1,0 +1,23 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v8.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v8.0": {
+      "notification-toast-helper/1.0.0": {
+        "runtime": {
+          "notification-toast-helper.dll": {}
+        }
+      }
+    }
+  },
+  "libraries": {
+    "notification-toast-helper/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

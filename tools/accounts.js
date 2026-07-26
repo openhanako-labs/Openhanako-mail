@@ -4,6 +4,17 @@ import path from "node:path";
 export const name = "mail_accounts";
 export const description = "邮件账号管理：列表/创建/删除账号";
 
+export const parameters = {
+  type: "object",
+  properties: {
+    action: { type: "string", enum: ["list", "create", "delete"], description: "操作类型" },
+    name: { type: "string", description: "账号名称（create 时必填）" },
+    email: { type: "string", description: "邮箱地址（create 时必填）" },
+    provider: { type: "string", description: "邮箱提供商（create 时可选，默认 imap）" },
+    id: { type: "string", description: "账号 ID（delete 时必填）" },
+  },
+};
+
 export async function execute(input, ctx) {
   const action = input?.action || "list";
   ctx.log?.info?.("mail_accounts", { action });
