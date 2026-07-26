@@ -27,16 +27,21 @@ cd Openhanako-mail
 
 ## 配置
 
-在 `backend/.env` 中配置环境变量：
+在插件 UI 中添加账号时填写：
 
-```env
-CLAWEMAIL_API_KEY=your-api-key
-CLAWEMAIL_ADDRESS=your-email@claw.163.com
-CLAWEMAIL_EXTRA_ADDRESSES=extra1@claw.163.com,extra2@claw.163.com
-AGENTQQ_EXTRA_ADDRESSES=your-agent@agent.qq.com
-EMAIL_IDENTITY_MAP=email1@claw.163.com=ophelia,email2@claw.163.com=luoqixi
-EMAIL_INTERNAL_CONTACTS=internal@example.com
-```
+- **ClawEmail（163）**：邮箱地址 + API Key
+- **AgentQQ（QQ）**：邮箱地址（无需 API Key）
+- **身份映射**：`EMAIL_IDENTITY_MAP` 支持在 UI 中配置
+
+> 账号信息保存在插件数据目录的 `accounts.json` 中，apiKey 会自动注入后端。
+> `backend/.env` 仅在账号未填写 apiKey 时作为兜底，不再强制要求。
+
+## 依赖
+
+| 后端 | 依赖 | 安装命令 |
+|------|------|----------|
+| ClawEmail（163） | `@clawemail/node-sdk` | `cd backend && npm install` |
+| AgentQQ（QQ） | `agently-cli`（本地命令） | 需单独安装 |
 
 ## 结构
 
