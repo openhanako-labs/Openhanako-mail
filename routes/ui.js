@@ -47,6 +47,7 @@ async function runInbox(args, extraEnv = {}) {
       cwd: BACKEND_DIR,
       encoding: "utf-8",
       windowsHide: true,
+      maxBuffer: 10 * 1024 * 1024,
       env: { ...process.env, ...extraEnv },
     }, (err, stdout, stderr) => {
       if (err) return reject(new Error(`${err.message}: ${stderr}`));
