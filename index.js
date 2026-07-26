@@ -35,31 +35,32 @@ function autoInstallDeps() {
   if (missing.length === 0) return;
 
   fs.writeFileSync(lockFile, Date.now().toString());
-  execFile(process.execPath, ["-e", "", "--"], {
-    cwd: BACKEND_DIR,
-    windowsHide: true,
-    timeout: 120000,
-  });
 
-  // 用 spawn 后台跑 npm install
+  // 用 spawn 后台跑 npm install（Windows 需要 shell: true 才能找到 npm.cmd）
   const proc = spawn("npm", ["install"], {
     cwd: BACKEND_DIR,
     windowsHide: true,
-    stdio: "ignore",
+    shell: true,
+    stdio: ["ignore", "pipe", "pipe"],
   });
+
+  let stdout = "";
+  let stderr = "";
+  proc.stdout?.on("data", (d) => { stdout += d.toString(); });
+  proc.stderr?.on("data", (d) => { stderr += d.toString(); });
 
   proc.on("close", (code) => {
     try { fs.unlinkSync(lockFile); } catch {}
     if (code === 0) {
       console.log("[hanako-mail] 后端依赖自动安装成功");
     } else {
-      console.warn("[hanako-mail] 后端依赖自动安装失败，请手动执行: cd backend && npm install");
+      console.warn("[hanako-mail] 后端依赖自动安装失败", { code, stderr: stderr.slice(-500) });
     }
   });
 
-  proc.on("error", () => {
+  proc.on("error", (e) => {
     try { fs.unlinkSync(lockFile); } catch {}
-    console.warn("[hanako-mail] 无法自动安装依赖，请手动执行: cd backend && npm install");
+    console.warn("[hanako-mail] 无法自动安装依赖", { error: e.message });
   });
 }
 
