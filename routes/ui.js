@@ -47,7 +47,7 @@ async function runInbox(args, extraEnv = {}) {
       cwd: BACKEND_DIR,
       encoding: "utf-8",
       windowsHide: true,
-      maxBuffer: 10 * 1024 * 1024,
+      maxBuffer: 50 * 1024 * 1024,
       env: { ...process.env, ...extraEnv },
     }, (err, stdout, stderr) => {
       if (err) return reject(new Error(`${err.message}: ${stderr}`));
@@ -62,6 +62,31 @@ async function runInbox(args, extraEnv = {}) {
 
 function resolveAccount(accountsList, accountId) {
   return accountsList.find(a => a.id === accountId);
+}
+
+// 检查后端依赖是否完整
+function checkBackendDeps(account) {
+  if (!account) return null;
+  const email = (account.email || "").toLowerCase();
+
+  // ClawEmail 需要 @clawemail/node-sdk
+  if (email.endsWith("@claw.163.com")) {
+    const sdkPath = path.join(BACKEND_DIR, "node_modules", "@clawemail", "node-sdk", "package.json");
+    if (!fs.existsSync(sdkPath)) {
+      return { error: "ClawEmail SDK 未安装。请先在 backend/ 目录执行 npm install，或改用其他后端。", hint: "cd backend && npm install" };
+    }
+  }
+
+  // 非 API 邮箱（IMAP 个人邮箱）需要 imap 和 nodemailer
+  if (!email.endsWith("@claw.163.com") && !email.endsWith("@agent.qq.com")) {
+    const imapPath = path.join(BACKEND_DIR, "node_modules", "imap", "package.json");
+    const nmPath = path.join(BACKEND_DIR, "node_modules", "nodemailer", "package.json");
+    if (!fs.existsSync(imapPath) || !fs.existsSync(nmPath)) {
+      return { error: "IMAP 依赖未安装。请先在 backend/ 目录执行 npm install，否则个人邮箱无法使用。", hint: "cd backend && npm install" };
+    }
+  }
+
+  return null;
 }
 
 // 将 account 的 apiKey / email / IMAP 配置透传给后端子进程。
@@ -317,22 +342,11 @@ export default function (app, ctx) {
     const account = resolveAccount(accounts(), accountId);
     if (!account) return c.json({ ok: false, error: "account not found" });
 
-    // ClawEmail 依赖检查：给出可读错误，而不是 Node 的 ERR_MODULE_NOT_FOUND
-    if (account.email?.endsWith("@claw.163.com")) {
-      try {
-        const sdkPath = path.join(BACKEND_DIR, "node_modules", "@clawemail", "node-sdk", "package.json");
-        if (!fs.existsSync(sdkPath)) {
-          return c.json({
-            ok: false,
-            error: "ClawEmail SDK 未安装。请先在 backend/ 目录执行 npm install，或改用 AgentQQ 后端。",
-            hint: "cd backend && npm install",
-          }, 400);
-        }
-      } catch {}
-    }
+  const depIssue = checkBackendDeps(account);
+  if (depIssue) return c.json({ ok: false, error: depIssue.error, hint: depIssue.hint }, 400);
 
-    try {
-      let folders = [];
+  try {
+    let folders = [];
       try {
         const foldersRaw = await runInbox(["folders", account.email], inboxEnvFor(account));
         folders = (Array.isArray(foldersRaw) ? foldersRaw : []).map(f => ({
@@ -374,12 +388,8 @@ export default function (app, ctx) {
     const account = resolveAccount(accounts(), accountId);
     if (!account) return c.json({ ok: false, error: "account not found" });
 
-    if (account.email?.endsWith("@claw.163.com")) {
-      const sdkPath = path.join(BACKEND_DIR, "node_modules", "@clawemail", "node-sdk", "package.json");
-      if (!fs.existsSync(sdkPath)) {
-        return c.json({ ok: false, error: "ClawEmail SDK 未安装，请先在 backend/ 执行 npm install，或改用 AgentQQ 后端。", hint: "cd backend && npm install" }, 400);
-      }
-    }
+    const depIssue = checkBackendDeps(account);
+    if (depIssue) return c.json({ ok: false, error: depIssue.error, hint: depIssue.hint }, 400);
 
     try {
       let result;
@@ -404,12 +414,8 @@ export default function (app, ctx) {
     const account = resolveAccount(accounts(), accountId);
     if (!account) return c.json({ ok: false, error: "account not found" });
 
-    if (account.email?.endsWith("@claw.163.com")) {
-      const sdkPath = path.join(BACKEND_DIR, "node_modules", "@clawemail", "node-sdk", "package.json");
-      if (!fs.existsSync(sdkPath)) {
-        return c.json({ ok: false, error: "ClawEmail SDK 未安装，请先在 backend/ 执行 npm install，或改用 AgentQQ 后端。", hint: "cd backend && npm install" }, 400);
-      }
-    }
+    const depIssue = checkBackendDeps(account);
+    if (depIssue) return c.json({ ok: false, error: depIssue.error, hint: depIssue.hint }, 400);
 
     // 始终更新本地缓存（保证 UI 视觉一致）
     function updateLocalRead() {
@@ -445,12 +451,8 @@ export default function (app, ctx) {
     if (!accountId || !q) return c.json({ ok: false, error: "accountId/q is required" });
     const account = resolveAccount(accounts(), accountId);
     if (!account) return c.json({ ok: false, error: "account not found" });
-    if (account.email?.endsWith("@claw.163.com")) {
-      const sdkPath = path.join(BACKEND_DIR, "node_modules", "@clawemail", "node-sdk", "package.json");
-      if (!fs.existsSync(sdkPath)) {
-        return c.json({ ok: false, error: "ClawEmail SDK 未安装，请先在 backend/ 执行 npm install，或改用 AgentQQ 后端。", hint: "cd backend && npm install" }, 400);
-      }
-    }
+    const depIssue = checkBackendDeps(account);
+    if (depIssue) return c.json({ ok: false, error: depIssue.error, hint: depIssue.hint }, 400);
     try {
       const result = await runInbox(["search", account.email, q], inboxEnvFor(account));
       if (result && result.error) return c.json({ ok: false, error: result.error });
@@ -474,12 +476,8 @@ export default function (app, ctx) {
     }
     const account = resolveAccount(accounts(), accountId);
     if (!account) return c.json({ ok: false, error: "account not found" }, 404);
-    if (account.email?.endsWith("@claw.163.com")) {
-      const sdkPath = path.join(BACKEND_DIR, "node_modules", "@clawemail", "node-sdk", "package.json");
-      if (!fs.existsSync(sdkPath)) {
-        return c.json({ ok: false, error: "ClawEmail SDK 未安装，请先在 backend/ 执行 npm install，或改用 AgentQQ 后端。", hint: "cd backend && npm install" }, 400);
-      }
-    }
+    const depIssue = checkBackendDeps(account);
+    if (depIssue) return c.json({ ok: false, error: depIssue.error, hint: depIssue.hint }, 400);
     try {
       const r = await runInbox(["attachment", account.email, messageId, partId], inboxEnvFor(account));
       if (r && r.error) return c.json({ ok: false, error: String(r.error) }, 400);

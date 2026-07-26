@@ -12,7 +12,7 @@ async function runInbox(args) {
       cwd: BACKEND_DIR,
       encoding: "utf-8",
       windowsHide: true,
-      maxBuffer: 10 * 1024 * 1024,
+      maxBuffer: 50 * 1024 * 1024,
     }, (err, stdout, stderr) => {
       if (err) return reject(new Error(`${err.message}: ${stderr}`));
       try {
