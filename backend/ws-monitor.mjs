@@ -185,6 +185,17 @@ export async function startAll() {
 }
 
 // 直接运行模式（被 index.js spawn 时执行）
+let shuttingDown = false;
+function shutdown(code = 0) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  log("INFO", "收到退出信号，正在关闭 WebSocket 监听...");
+  process.exit(code);
+}
+process.on("SIGTERM", () => shutdown(0));
+process.on("SIGINT", () => shutdown(0));
+process.on("SIGBREAK", () => shutdown(0)); // Windows Ctrl+Break
+
 try {
   log("INFO", "文件已加载");
   await startAll();

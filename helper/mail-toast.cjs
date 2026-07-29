@@ -91,7 +91,7 @@ function tryNotifyViaSnoreToast() {
   const { execFile } = require("child_process");
   execFile(snoreExe, [
     "-title", "Hanako Mail",
-    "-message", `📩 ${subject}`,
+    "-message", `新邮件：${subject}`,
     "-appID", "Hanako.Mail",
     "-pipeName", `hanako-mail-${toastId}`,
     "-click", clickCmd,
@@ -118,7 +118,7 @@ function tryNotifyViaNodeNotifier() {
     const notifier = require(notifierPath);
     notifier.notify({
       title: "Hanako Mail",
-      message: `📩 ${subject}`,
+      message: `新邮件：${subject}`,
       sender: sender,
       sound: false,
       wait: false,

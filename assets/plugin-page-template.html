@@ -68,7 +68,7 @@ button, input, textarea, select { font: inherit; }
 .brand-bar {
   position: relative; overflow: hidden;
   display: flex; align-items: center; padding: 18px 24px;
-  color: #fff5e6; border-bottom: 4px solid var(--ink);
+  color: #fff5e6; border-bottom: 2px solid var(--ink);
   background: linear-gradient(135deg, #5c4a32 0%, #8a6d4f 60%, #a58b66 100%);
 }
 body[data-hana-theme="dark"] .brand-bar {
@@ -99,7 +99,7 @@ body[data-hana-theme="dark"] .brand-kicker { color: var(--gold); }
 
 .navbar {
   display: flex; align-items: stretch; gap: 6px; padding: 6px 16px 0;
-  background: var(--sidebar); border-bottom: 4px solid var(--ink);
+  background: var(--sidebar); border-bottom: 1px solid var(--border);
   box-shadow: inset 0 2px rgba(255,255,255,.35);
 }
 .nav-item {
@@ -128,12 +128,12 @@ body[data-hana-theme="dark"] .workspace { background: #1e1914; }
 
 .rail {
   min-height: 0; display: flex; flex-direction: column;
-  border: 3px solid var(--border); border-radius: 6px;
+  border: 1px solid var(--border); border-radius: 6px;
   background: var(--sidebar); overflow: hidden;
 }
 .rail-title {
   padding: 8px 12px; font: 900 12px var(--display); color: var(--accent-dark);
-  border-bottom: 2px solid var(--border); background: var(--paper);
+  border-bottom: 1px solid var(--border); background: var(--paper);
 }
 .rail-title::before { content: '◉ '; color: var(--gold); }
 .rail-title.folders::before { content: '▤ '; }
@@ -142,29 +142,35 @@ body[data-hana-theme="dark"] .workspace { background: #1e1914; }
 
 .acct, .folder {
   text-align: left; cursor: pointer; padding: 7px 10px;
-  border: 2px solid var(--border); border-radius: 6px; background: var(--paper);
+  border: 1px solid transparent; border-radius: 5px; background: var(--paper);
   font: 700 12px var(--ui); color: var(--ink);
   display: flex; flex-direction: column; gap: 2px; position: relative;
 }
-.acct:hover, .folder:hover { filter: brightness(1.04); }
+.acct:hover, .folder:hover { background: var(--hover-row); }
 .acct.active, .folder.active { border-color: var(--accent); background: var(--accent-light); }
 .acct .sub, .folder .sub { font-size: 10px; color: var(--text-muted); font-weight: 400; }
 .folder .badge {
   position: absolute; right: 8px; top: 7px; padding: 0 7px; border-radius: 10px;
-  background: var(--gold-light); color: #3a3226; font: 800 10px var(--display);
+  background: var(--accent); color: #fff5e6; font: 800 10px var(--display);
 }
+/* 已读/未读统计行 */
+.folder .folder-stats {
+  display: block; font-size: 9px; color: var(--text-muted); font-weight: 400;
+  margin-top: 1px; letter-spacing: .02em;
+}
+.folder .folder-stats .unread-num { color: var(--accent); font-weight: 700; }
 .folder .acct-del {
   position: absolute; right: 6px; top: 5px; padding: 1px 6px; font-size: 10px;
 }
 
 .main {
-  min-height: 0; border: 3px solid var(--border); border-radius: 6px;
-  background: var(--cream); box-shadow: inset 0 0 0 2px var(--highlight);
+  min-height: 0; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--cream);
   display: flex; flex-direction: column; overflow: hidden;
 }
 .topbar {
   min-height: 60px; padding: 10px 18px; display: flex; justify-content: space-between; align-items: center;
-  background: var(--paper); border-bottom: 2px solid var(--border); gap: 10px;
+  background: var(--paper); border-bottom: 1px solid var(--border); gap: 10px;
 }
 .topbar h2 { font: 900 16px/1.3 var(--display); letter-spacing: .06em; }
 .topbar h2::before { content: '▸ '; color: var(--gold); }
@@ -177,28 +183,73 @@ body[data-hana-theme="dark"] .workspace { background: #1e1914; }
 .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; }
 .metric {
   position: relative; padding: 10px 12px; background: var(--paper);
-  border: 2px solid var(--border); border-radius: var(--radius);
-  box-shadow: inset 0 2px var(--highlight), 3px 3px 0 var(--shadow-block);
+  border: 1px solid var(--border); border-radius: 5px;
 }
-.metric::after { content: '◆'; position: absolute; right: 8px; top: 8px; color: var(--border); font-size: 8px; }
+.metric::after { content: '◆'; position: absolute; right: 8px; top: 8px; color: var(--border); font-size: 8px; opacity: .4; }
 .metric .value { font: 900 18px/1.2 var(--display); color: var(--accent-dark); font-variant-numeric: tabular-nums; }
 .metric .label { margin-top: 2px; font: 700 10px var(--display); color: var(--text-muted); }
 
 .panel, .card {
-  background: var(--paper); border: 2px solid var(--border); border-radius: var(--radius);
-  box-shadow: inset 0 2px var(--highlight), 3px 3px 0 var(--shadow-block);
+  background: var(--paper); border: 1px solid var(--border); border-radius: 5px;
 }
 .panel { padding: 14px 16px; }
 .panel-title { margin-bottom: 10px; font: 900 13px var(--display); color: var(--accent-dark); }
-.panel-title::before { content: '✦ '; color: var(--gold); }
-.card-list { display: flex; flex-direction: column; gap: 10px; }
-.card { padding: 12px 14px; transition: transform .12s, box-shadow .12s; animation: rise .18s ease; position: relative; }
-.card:hover { transform: translateY(-1px); box-shadow: inset 0 2px var(--highlight), 4px 5px 0 var(--shadow-block); }
-.card.unread { border-left: 4px solid var(--accent); }
-.card-title { font-size: 14px; font-weight: 800; }
-.card-body { font-size: 12px; color: var(--ink-soft); margin-top: 4px; }
-.card-actions { display: flex; gap: 8px; margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--border); }
+.panel-title::before { content: ''; color: var(--gold); }
+.card-list { display: flex; flex-direction: column; gap: 6px; }
+.card {
+  padding: 10px 14px; transition: transform .12s, box-shadow .12s, background .12s;
+  animation: rise .18s ease; position: relative;
+  border: 1px solid var(--border); border-radius: 5px;
+  background: var(--paper); cursor: pointer;
+}
+.card:hover { transform: translateY(-1px); background: var(--hover-row); }
+.card.unread { border-left: 3px solid var(--accent); background: #fffaf0; }
+body[data-hana-theme="dark"] .card.unread { background: rgba(156,61,46,.06); }
+.card-title { font-size: 13px; font-weight: 800; }
+.card-body { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
+.card-actions {
+  display: flex; gap: 8px; margin-top: 8px; padding-top: 6px;
+  /* 去掉重虚线，用极淡分隔 */
+  border-top: 1px solid rgba(196,180,154,.25);
+}
 @keyframes rise { from { opacity: 0; transform: translateY(3px); } }
+
+/* ── 左侧筛选栏 ── */
+.filter-bar {
+  display: flex; gap: 4px; padding: 6px 8px;
+  background: var(--paper); border-bottom: 1px solid var(--border);
+}
+.filter-bar .filter-btn {
+  flex: 1; padding: 4px 0; font-size: 11px; font-weight: 700;
+  text-align: center; border: 1px solid var(--border); border-radius: 4px;
+  background: var(--cream); color: var(--ink-soft); cursor: pointer;
+  transition: all .12s;
+}
+.filter-bar .filter-btn:hover { background: var(--hover-row); }
+.filter-bar .filter-btn.active {
+  background: var(--accent); color: #fff5e6; border-color: var(--accent);
+}
+
+/* 批量操作工具栏 */
+.batch-toolbar {
+  display: none; align-items: center; gap: 8px; padding: 8px 14px;
+  background: var(--paper); border: 1px solid var(--border);
+  border-radius: 5px; margin-bottom: 8px;
+  font-size: 12px; flex-wrap: wrap;
+}
+.batch-toolbar.visible { display: flex; }
+.batch-toolbar .batch-info { color: var(--text-muted); font-weight: 700; margin-right: auto; }
+.batch-toolbar .btn.small { padding: 3px 10px; font-size: 11px; }
+
+/* 卡片选择态 */
+.card.selected { outline: 2px solid var(--gold); background: rgba(176,141,87,.08); }
+.card .card-check {
+  position: absolute; left: 8px; top: 10px; opacity: 0; transition: opacity .15s;
+  accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer;
+}
+.card:hover .card-check, .batch-toolbar.visible ~ .card-list .card .card-check,
+.batch-toolbar.visible + .card .card-check { opacity: 1; }
+.card.has-check { padding-left: 28px; }
 
 .stamp {
   position: absolute; right: 12px; top: 10px; width: 42px; height: 42px;
@@ -209,9 +260,8 @@ body[data-hana-theme="dark"] .workspace { background: #1e1914; }
 body[data-hana-theme="dark"] .stamp { border-color: var(--accent); color: var(--accent); }
 
 .btn {
-  cursor: pointer; padding: 6px 14px; border: 2px solid var(--ink); border-radius: 6px;
+  cursor: pointer; padding: 6px 14px; border: 1px solid var(--ink); border-radius: 5px;
   background: #e4dbca; color: #3a3226; font: 800 12px var(--display);
-  box-shadow: inset 0 2px rgba(255,255,255,.55), 2px 2px 0 var(--shadow-block);
   transition: transform .1s, filter .1s;
 }
 body[data-hana-theme="dark"] .btn { background: #3a3228; color: var(--ink); }
@@ -223,9 +273,8 @@ body[data-hana-theme="dark"] .btn.danger { background: #4a2c28; color: #e8b0a8; 
 .btn.small { padding: 4px 10px; font-size: 11px; }
 
 .inp {
-  width: 100%; padding: 8px 10px; border: 2px solid var(--border); border-radius: 6px;
+  width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 5px;
   background: var(--input-bg); color: var(--ink); font-size: 13px;
-  box-shadow: inset 2px 2px rgba(0,0,0,.05);
 }
 .inp:focus { outline: 3px solid rgba(176,141,87,.25); border-color: var(--gold); }
 textarea.inp { resize: vertical; min-height: 160px; line-height: 1.6; }
@@ -241,7 +290,7 @@ body[data-hana-theme="dark"] .account-fields { border-left-color: var(--gold); }
 
 .empty {
   padding: 28px 16px; text-align: center; color: var(--text-muted);
-  font: 700 12px var(--display); border: 2px dashed var(--border);
+  font: 700 12px var(--display); border: 1px dashed var(--border);
   border-radius: 6px; background: var(--accent-light);
 }
 .loading { padding: 24px 16px; text-align: center; color: var(--text-muted); font: 700 12px var(--display); }
@@ -281,30 +330,28 @@ body[data-hana-theme="dark"] .account-fields { border-left-color: var(--gold); }
 .noti-toast .noti-close:hover { opacity: 1; }
 
 /* 邮件详情 */
-.detail-head { background: var(--paper); border: 2px solid var(--border); border-radius: 6px; padding: 12px 14px; box-shadow: inset 0 2px var(--highlight); }
+.detail-head { background: var(--paper); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; }
 .detail-subject { font: 900 16px/1.3 var(--display); color: var(--accent-dark); }
 .detail-meta { margin-top: 8px; font-size: 12px; color: var(--ink-soft); display: grid; gap: 3px; }
 .detail-meta b { color: var(--ink); font-weight: 800; }
 .mail-body-wrap {
-  border: 2px solid var(--border); border-radius: 6px;
+  border: 1px solid var(--border); border-radius: 6px;
   background: var(--paper); overflow: hidden;
-  box-shadow: inset 0 2px var(--highlight), 3px 3px 0 var(--shadow-block);
 }
 .mail-body-frame { width: 100%; border: 0; height: 64vh; min-height: 360px; background: #fff; display: block; }
-.mail-body-text { white-space: pre-wrap; font-size: 13px; color: var(--ink); border: 2px solid var(--border); border-radius: 6px; padding: 12px 14px; background: var(--paper); }
+.mail-body-text { white-space: pre-wrap; font-size: 13px; color: var(--ink); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; background: var(--paper); }
 
 /* 附件列表 */
 .attachments {
   margin-top: 12px; padding: 12px 14px;
-  border: 2px dashed var(--border); border-radius: 6px; background: var(--accent-light);
+  border: 1px dashed var(--border); border-radius: 6px; background: var(--accent-light);
 }
 .attachments-title { font: 900 12px var(--display); color: var(--accent-dark); margin-bottom: 8px; }
-.attachments-title::before { content: '📎 '; }
+.attachments-title::before { content: ''; }
 .att-list { display: flex; flex-direction: column; gap: 8px; }
 .att-item {
   display: flex; align-items: center; gap: 10px; padding: 8px 10px;
-  border: 2px solid var(--border); border-radius: 6px; background: var(--paper);
-  box-shadow: inset 0 2px var(--highlight);
+  border: 1px solid var(--border); border-radius: 5px; background: var(--paper);
 }
 .att-item .att-ico { font-size: 18px; line-height: 1; }
 .att-item .att-meta { flex: 1; min-width: 0; }
@@ -352,9 +399,62 @@ body[data-hana-theme="dark"] .account-fields { border-left-color: var(--gold); }
   position: relative;
 }
 .sep::before {
-  content: '• ✦ •'; position: absolute; top: -11px; left: 50%; transform: translateX(-50%);
+  content: '• • •'; position: absolute; top: -11px; left: 50%; transform: translateX(-50%);
   background: var(--cream); padding: 0 10px; color: var(--gold); font: 900 11px var(--display);
 }
+
+/* ── AI 总结 / 翻译 面板 ── */
+.ai-panel {
+  margin-top: 14px; padding: 12px 14px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--accent-light); box-shadow: inset 0 1px rgba(255,255,255,.4);
+}
+.ai-panel-head { display: flex; align-items: center; gap: 6px; font: 800 13px var(--display); color: var(--accent-dark); margin-bottom: 6px; }
+.ai-panel-body { white-space: pre-wrap; font-size: 13px; color: var(--ink); line-height: 1.6; }
+.ai-error { color: #9c3d2e; font-size: 12px; font-weight: 700; }
+.ai-loading { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font: 700 12px var(--ui); }
+.spinner {
+  width: 13px; height: 13px; border: 2px solid var(--border); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── LLM 设置面板 ── */
+.llm-settings {
+  margin-top: 16px; padding: 14px 16px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--paper);
+}
+.llm-settings-head {
+  display: flex; align-items: center; justify-content: space-between;
+  font: 900 13px var(--display); color: var(--accent-dark); margin-bottom: 10px;
+}
+.llm-settings-head::before { content: ''; }
+.llm-form { display: flex; flex-direction: column; gap: 8px; max-width: 460px; }
+.llm-form .llm-row { display: flex; flex-direction: column; gap: 4px; }
+.llm-form .llm-row label { font: 700 11px var(--ui); color: var(--ink-soft); }
+.llm-form .llm-row input, .llm-form .llm-row select { padding: 6px 10px; border: 1px solid var(--border); border-radius: 5px; background: var(--input-bg); color: var(--ink); font-size: 12px; }
+.llm-form .llm-row input:focus, .llm-form .llm-row select:focus { outline: 3px solid rgba(176,141,87,.25); border-color: var(--gold); }
+.llm-note { margin-top: 10px; font-size: 11px; color: var(--text-muted); line-height: 1.5; max-width: 460px; word-break: break-all; }
+.llm-note .warn { color: #c0392b; font-weight: 700; }
+.llm-preset {
+  display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px;
+}
+.llm-preset .preset-chip {
+  padding: 3px 10px; font-size: 11px; font-weight: 700;
+  border: 1px solid var(--border); border-radius: 12px;
+  background: var(--cream); color: var(--ink-soft); cursor: pointer;
+  transition: all .12s;
+}
+.llm-preset .preset-chip:hover { background: var(--hover-row); border-color: var(--gold); }
+.llm-preset .preset-chip.active { background: var(--accent); color: #fff5e6; border-color: var(--accent); }
+.llm-status {
+  margin-top: 8px; padding: 6px 10px; font-size: 11px; font-weight: 700;
+  border-radius: 4px; display: none;
+}
+.llm-status.ok { display: block; background: rgba(76,175,80,.08); color: #2e7d32; }
+.llm-status.err { display: block; rgba(156,61,46,.08); color: #9c3d2e; }
+.llm-test-btn { align-self: flex-start; margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -379,7 +479,7 @@ setTimeout(function(){try{window.parent.postMessage({source:'hana-plugin',type:'
   </header>
 
   <nav class="navbar" id="navbar">
-    <div class="nav-item active" data-page="overview">✦ 账号</div>
+    <div class="nav-item active" data-page="overview">账号</div>
     <div class="nav-item" data-page="list">◆ 收件箱</div>
     <div class="nav-item" data-page="settings">▣ 同步</div>
   </nav>
@@ -390,6 +490,11 @@ setTimeout(function(){try{window.parent.postMessage({source:'hana-plugin',type:'
       <div class="rail-scroll" id="acctList"></div>
       <div class="rail-sep"></div>
       <div class="rail-title folders">文件夹</div>
+      <div class="filter-bar" id="filterBar" style="display:none">
+        <button class="filter-btn active" data-filter="all">全部</button>
+        <button class="filter-btn" data-filter="unread">未读</button>
+        <button class="filter-btn" data-filter="read">已读</button>
+      </div>
       <div class="rail-scroll" id="folderList"><div class="empty" style="padding:14px 8px">选择账号后显示</div></div>
     </aside>
 
@@ -397,12 +502,12 @@ setTimeout(function(){try{window.parent.postMessage({source:'hana-plugin',type:'
       <header class="topbar">
         <div><h2 id="pageTitle">账号</h2><span class="subtitle" id="pageSubtitle">邮箱账号管理</span></div>
         <div class="topbar-actions">
-          <div class="search-bar" id="searchBar" style="display:none">
+          <div class="search-bar" id="searchBar">
             <input class="inp" id="searchInput" placeholder="搜索主题或发件人…">
-            <button class="btn" id="searchBtn">✦ 搜索</button>
-            <button class="btn" id="searchClearBtn">✕</button>
+            <button class="btn" id="searchBtn"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg> 搜索</button>
+            <button class="btn" id="searchClearBtn" aria-label="清除搜索">×</button>
           </div>
-          <button class="btn small" id="composeBtn" style="display:none">✚ 写邮件</button>
+          <button class="btn small" id="composeBtn" style="display:none"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg> 写邮件</button>
           <button class="btn small" id="themeBtn">◐ 切换主题</button>
         </div>
       </header>
@@ -460,8 +565,18 @@ setTimeout(function(){try{window.parent.postMessage({source:'hana-plugin',type:'
         </div>
 
         <div class="page" id="page-list">
+          <div class="batch-toolbar" id="batchToolbar">
+            <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-weight:700;color:var(--ink)">
+              <input type="checkbox" id="selectAllCheck"> 全选
+            </label>
+            <span class="batch-info" id="batchInfo"></span>
+            <button class="btn small" id="batchMarkRead"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> 标已读</button>
+            <button class="btn small" id="batchMarkUnread"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.83 2.83 0 114 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg> 标未读</button>
+            <button class="btn small danger" id="batchDelete"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg> 删除</button>
+            <button class="btn small" id="batchCancel" style="margin-left:auto">取消选择</button>
+          </div>
           <div class="card-list" id="listCards"></div>
-          <div class="empty" id="listEmpty" style="display:none">这里还什么都没有，去探索吧 ✦</div>
+          <div class="empty" id="listEmpty" style="display:none">这里还什么都没有，去探索吧</div>
         </div>
 
         <div class="page" id="page-detail">
@@ -474,10 +589,16 @@ setTimeout(function(){try{window.parent.postMessage({source:'hana-plugin',type:'
             <form id="composeForm" class="field">
               <label>收件人</label>
               <input class="inp" id="cmpTo" placeholder="to@example.com" required>
+              <label>抄送 (CC)</label>
+              <input class="inp" id="cmpCc" placeholder="cc@example.com（多个用逗号分隔）">
+              <label>密送 (BCC)</label>
+              <input class="inp" id="cmpBcc" placeholder="bcc@example.com（多个用逗号分隔）">
               <label>主题</label>
               <input class="inp" id="cmpSubject" placeholder="主题">
               <label>正文</label>
               <textarea class="inp" id="cmpBody" placeholder="写点什么…"></textarea>
+              <label>附件</label>
+              <input type="file" id="cmpAttach" multiple class="inp">
               <div class="field-row">
                 <button type="submit" class="btn primary">发送</button>
                 <button type="button" class="btn" id="cmpCancel">取消</button>
@@ -493,6 +614,46 @@ setTimeout(function(){try{window.parent.postMessage({source:'hana-plugin',type:'
               <button class="btn primary" id="syncBtn">刷新当前文件夹</button>
               <div id="syncStatus" style="font-size:12px;color:var(--text-muted)">点击按钮同步最新邮件</div>
             </div>
+          </div>
+
+          <div class="llm-settings">
+            <div class="llm-settings-head">
+              <span>AI 总结 / 翻译 设置</span>
+              <button class="btn small" id="llmTestBtn">测试连接</button>
+            </div>
+            <div class="llm-status" id="llmStatus"></div>
+            <div class="llm-preset" id="llmPresets">
+              <span style="font-size:11px;color:var(--text-muted);font-weight:700;width:100%">已保存的 LLM 配置（点击切换）：</span>
+            </div>
+            <form class="llm-form" id="llmForm">
+              <div class="llm-row">
+                <label>配置名称</label>
+                <input type="text" id="llmName" placeholder="例如 Ollama 本地、OpenAI、DeepSeek">
+              </div>
+              <div class="llm-row">
+                <label>供应商 (Provider)</label>
+                <input type="text" id="llmProvider" placeholder="例如 deepseek、openai、agnes（来自 agent config）">
+              </div>
+              <div class="llm-row">
+                <label>API 地址 (Base URL)</label>
+                <input type="url" id="llmBaseUrl" placeholder="例如 https://api.openai.com/v1 或 http://localhost:11434/v1">
+              </div>
+              <div class="llm-row">
+                <label>API Key</label>
+                <input type="password" id="llmApiKey" placeholder="sk-...（留空则不传）">
+              </div>
+              <div class="llm-row">
+                <label>模型名称</label>
+                <input type="text" id="llmModel" placeholder="例如 gpt-4o-mini, qwen2.5:7b, deepseek-chat">
+              </div>
+              <div class="llm-row" style="flex-direction:row;align-items:center;gap:10px;margin-top:6px;flex-wrap:wrap">
+                <button type="submit" class="btn primary small" id="llmSaveBtn">保存配置</button>
+                <button type="button" class="btn small" id="llmDetectBtn">检测 Hanako 配置</button>
+                <button type="button" class="btn small danger" id="llmDeleteBtn" style="display:none">删除当前</button>
+                <button type="button" class="btn small" id="llmClearBtn">清除全部</button>
+              </div>
+            </form>
+            <div class="llm-note" id="llmActiveNote"></div>
           </div>
         </div>
 
@@ -546,7 +707,7 @@ function navigateTo(page) {
   document.getElementById('pageTitle').textContent = t[0];
   document.getElementById('pageSubtitle').textContent = t[1];
   document.getElementById('composeBtn').style.display = (page === 'detail' || page === 'list') ? 'inline-block' : 'none';
-  document.getElementById('searchBar').style.display = (page === 'list') ? 'flex' : 'none';
+  document.getElementById('searchBar').style.display = (page === 'compose') ? 'none' : 'flex';
 }
 document.querySelectorAll('.nav-item').forEach(function (n) {
   n.addEventListener('click', function () { navigateTo(n.dataset.page); });
@@ -576,7 +737,7 @@ function showNotification(subject, from, msgId, accountId) {
   el.innerHTML =
     '<button class="noti-close" onclick="event.stopPropagation();this.parentElement.remove()">×</button>' +
     '<div class="noti-from">' + esc(from || '(未知发件人)') + '</div>' +
-    '<div class="noti-subj">📩 ' + esc(subject || '(无主题)') + '</div>';
+    '<div class="noti-subj">' + svgIcon('mail') + ' ' + esc(subject || '(无主题)') + '</div>';
   el.addEventListener('click', function () {
     var folderId = state.folderId || 'INBOX';
     openDetail(msgId, accountId, folderId);
@@ -676,18 +837,41 @@ function humanSize(bytes) {
   return (i === 0 ? n : n.toFixed(1)) + ' ' + units[i];
 }
 
+// 统一描边 SVG 图标（替代 emoji 功能图标，符合无 emoji 图标规范）
+function svgIcon(name) {
+  var I = {
+    paperclip: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5l-8.5 8.5a5 5 0 0 1-7-7l8.5-8.5a3.5 3.5 0 0 1 5 5L11 17.5a2 2 0 0 1-3-3l8-8"/></svg>',
+    image: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>',
+    pdf: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>',
+    doc: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>',
+    sheet: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg>',
+    archive: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8M10 12h4"/></svg>',
+    audio: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>',
+    video: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9l5 3-5 3z"/></svg>',
+    text: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>',
+    mail: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>',
+    plus: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
+    check: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>',
+    search: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>',
+    sparkles: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.6 4.4L18 9l-4.4 1.6L12 15l-1.6-4.4L6 9l4.4-1.6z"/><path d="M19 14l.8 2.2L22 17l-2.2.8L19 20l-.8-2.2L16 17l2.2-.8z"/></svg>',
+    language: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h7M7.5 4v1c0 4-2 7-3.5 8M12 20l2.5-6M9.5 11h6"/><path d="M14 14c1.5 1 3 1.5 5 1.5 0-2-1-3.5-2.5-4.5"/><path d="M4 19c2.5 0 4.5-.5 6-1.5"/></svg>',
+    edit: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 3a2.83 2.83 0 114 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>'
+  };
+  return I[name] || I.paperclip;
+}
+
 function iconForType(contentType, filename) {
   var t = (contentType || '').toLowerCase();
   var name = (filename || '').toLowerCase();
-  if (t.startsWith('image/')) return '🖼️';
-  if (t === 'application/pdf') return '📄';
-  if (t.includes('word') || name.endsWith('.doc') || name.endsWith('.docx')) return '📝';
-  if (t.includes('excel') || t.includes('spreadsheet') || name.endsWith('.xls') || name.endsWith('.xlsx')) return '📊';
-  if (t.includes('zip') || t.includes('compressed') || /\.(zip|rar|7z|tar|gz)$/.test(name)) return '🗜️';
-  if (t.startsWith('audio/')) return '🎵';
-  if (t.startsWith('video/')) return '🎬';
-  if (t.startsWith('text/') || name.endsWith('.txt')) return '📃';
-  return '📎';
+  if (t.startsWith('image/')) return svgIcon('image');
+  if (t === 'application/pdf') return svgIcon('pdf');
+  if (t.includes('word') || name.endsWith('.doc') || name.endsWith('.docx')) return svgIcon('doc');
+  if (t.includes('excel') || t.includes('spreadsheet') || name.endsWith('.xls') || name.endsWith('.xlsx')) return svgIcon('sheet');
+  if (t.includes('zip') || t.includes('compressed') || /\.(zip|rar|7z|tar|gz)$/.test(name)) return svgIcon('archive');
+  if (t.startsWith('audio/')) return svgIcon('audio');
+  if (t.startsWith('video/')) return svgIcon('video');
+  if (t.startsWith('text/') || name.endsWith('.txt')) return svgIcon('text');
+  return svgIcon('paperclip');
 }
 
 function attachmentsHtml(atts) {
@@ -709,7 +893,7 @@ function attachmentsHtml(atts) {
       '</div>' +
     '</div>';
   }).join('');
-  return '<div class="attachments"><div class="attachments-title">附件 (' + atts.length + ')</div>' +
+  return '<div class="attachments"><div class="attachments-title">' + svgIcon('paperclip') + ' 附件 (' + atts.length + ')</div>' +
     '<div class="att-list">' + items + '</div></div>';
 }
 
@@ -762,7 +946,7 @@ function proxyUrl(externalUrl) {
 }
 
 /* ── 全局状态 ── */
-var state = { accountId: null, folderId: 'INBOX', accounts: [], folders: [] };
+var state = { accountId: null, folderId: 'INBOX', accounts: [], folders: [], readFilter: 'all' };
 var DEFAULT_FOLDERS = [
   { id: 'INBOX', name: '收件箱', type: 'inbox' },
   { id: 'Sent', name: '已发送', type: 'sent' },
@@ -818,29 +1002,77 @@ function loadFolders(accountId) {
   });
 }
 
-function renderFolders() {
-  var el = document.getElementById('folderList');
-  el.innerHTML = state.folders.map(function (f) {
-    var badge = (f.unreadCount && Number(f.unreadCount) > 0) ? '<span class="badge">' + f.unreadCount + '</span>' : '';
-    return '<button class="folder' + (f.id === state.folderId ? ' active' : '') + '" data-folder="' + esc(f.id) + '">' +
-      '<span>' + esc(f.name) + '</span>' + badge + '</button>';
-  }).join('');
+// 文件夹角色分类（用于决定批量操作按钮可见性）
+function folderRole(fid) {
+  var f = state.folders.find(function (x) { return x.id === fid; });
+  var id = String(fid || '').toLowerCase();
+  var name = f ? String(f.name || '').toLowerCase() : '';
+  var hay = id + ' ' + name;
+  if (/drafts?|草稿/.test(hay)) return 'drafts';
+  if (/sent|已发送|发件/.test(hay)) return 'sent';
+  if (/trash|deleted|垃圾箱|已删除|废纸/.test(hay)) return 'trash';
+  if (/spam|junk|垃圾邮件/.test(hay)) return 'spam';
+  return 'inbox';
 }
 
-function selectFolder(fid) {
-  state.folderId = fid;
+function renderFolders() {
+  var el = document.getElementById('folderList');
+  var filterBar = document.getElementById('filterBar');
+  // 有文件夹时显示筛选栏
+  if (filterBar) filterBar.style.display = state.folders.length ? 'flex' : 'none';
+  el.innerHTML = state.folders.map(function (f) {
+    var unread = Number(f.unreadCount) || 0;
+    var total = Number(f.totalCount) || 0;
+    var badge = unread > 0 ? '<span class="badge">' + unread + '</span>' : '';
+    var stats = total > 0
+      ? '<span class="folder-stats"><span class="unread-num">' + unread + '</span> 未读 / ' + total + ' 总计</span>'
+      : '';
+    return '<button class="folder' + (f.id === state.folderId ? ' active' : '') + '" data-folder="' + esc(f.id) + '">' +
+      '<span>' + esc(f.name) + '</span>' + badge + stats + '</button>';
+  }).join('');
+  // 绑定筛选按钮
+  bindFilterButtons();
+}
+
+function selectFolder(fid) {  state.folderId = fid;
+  state.readFilter = 'all'; // 切换文件夹时重置筛选
   document.querySelectorAll('.folder').forEach(function (b) { b.classList.toggle('active', b.dataset.folder === fid); });
+  // 重置筛选按钮高亮
+  document.querySelectorAll('#filterBar .filter-btn').forEach(function (b) {
+    b.classList.toggle('active', b.dataset.filter === 'all');
+  });
   loadMessages(state.accountId, fid);
 }
 
+/* ── 已读/未读筛选 ── */
+function bindFilterButtons() {
+  document.querySelectorAll('#filterBar .filter-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      state.readFilter = this.dataset.filter;
+      document.querySelectorAll('#filterBar .filter-btn').forEach(function (b) {
+        b.classList.toggle('active', b === btn);
+      });
+      loadMessages(state.accountId, state.folderId);
+    });
+  });
+}
+
 /* ── 邮件列表 ── */
+var _selectedIds = new Set();
+
 function loadMessages(accountId, folderId) {
   var listEl = document.getElementById('listCards');
   listEl.innerHTML = '<div class="loading">加载中…</div>';
   document.getElementById('listEmpty').style.display = 'none';
+  document.getElementById('batchToolbar').classList.remove('visible');
+  _selectedIds.clear();
+  updateBatchUI();
   navigateTo('list');
   return api('/messages?accountId=' + encodeURIComponent(accountId) + '&folderId=' + encodeURIComponent(folderId)).then(function (r) { return r.json(); }).then(function (md) {
     var list = md.data || [];
+    // 按已读/未读筛选
+    if (state.readFilter === 'unread') list = list.filter(function (m) { return !m.read; });
+    else if (state.readFilter === 'read') list = list.filter(function (m) { return m.read; });
     var unread = list.filter(function (m) { return !m.read; }).length;
     document.getElementById('metricUnread').textContent = unread;
     if (!list.length) { listEl.innerHTML = ''; document.getElementById('listEmpty').style.display = 'block'; return; }
@@ -849,14 +1081,66 @@ function loadMessages(accountId, folderId) {
       var date = m.date ? new Date(m.date.replace(' ', 'T')).toLocaleString() : '';
       var unreadDot = m.read ? '' : '<span class="badge-dot" title="未读"></span>';
       var snippet = m.snippet ? '<div class="card-snippet">' + esc(m.snippet) + '</div>' : '';
-      return '<div class="card' + (m.read ? '' : ' unread') + '" data-message-id="' + esc(m.id) + '">' +
+      var checked = _selectedIds.has(m.id) ? ' checked' : '';
+      var selClass = _selectedIds.has(m.id) ? ' selected' : '';
+      return '<div class="card' + (m.read ? '' : ' unread') + selClass + ' has-check" data-message-id="' + esc(m.id) + '">' +
+        '<input type="checkbox" class="card-check" data-msg-id="' + esc(m.id) + '"' + checked + '>' +
         '<div class="card-title">' + esc(m.subject || '(无主题)') + unreadDot + '</div>' +
         snippet +
         '<div class="card-body">' + esc(from) + ' · ' + esc(date) + '</div>' +
         '<div class="card-actions"><button class="btn primary small" data-open-message="' + esc(m.id) + '">查看</button></div>' +
         '</div>';
     }).join('');
+    bindCardChecks();
   }).catch(function () { toast('加载邮件失败'); });
+}
+
+function bindCardChecks() {
+  var checks = document.querySelectorAll('#listCards .card-check');
+  checks.forEach(function (cb) {
+    cb.addEventListener('change', function () {
+      var id = this.dataset.msgId;
+      if (this.checked) _selectedIds.add(id); else _selectedIds.delete(id);
+      updateCardSelection();
+      updateBatchUI();
+    });
+    // 点击卡片本身也触发查看（但不影响 checkbox）
+    var card = cb.closest('.card');
+    card.addEventListener('click', function (e) {
+      if (e.target.classList.contains('card-check') || e.target.closest('.card-actions')) return;
+      openDetail(card.dataset.messageId);
+    });
+  });
+}
+
+function updateCardSelection() {
+  document.querySelectorAll('#listCards .card').forEach(function (c) {
+    c.classList.toggle('selected', _selectedIds.has(c.dataset.messageId));
+    var cb = c.querySelector('.card-check');
+    if (cb) cb.checked = _selectedIds.has(c.dataset.messageId);
+  });
+}
+
+function updateBatchUI() {
+  var toolbar = document.getElementById('batchToolbar');
+  var info = document.getElementById('batchInfo');
+  var selectAll = document.getElementById('selectAllCheck');
+  // 非收件箱（已发送/草稿/垃圾箱/垃圾邮件）隐藏「标已读/标未读」——该操作无意义
+  var isInbox = folderRole(state.folderId) === 'inbox';
+  var markReadBtn = document.getElementById('batchMarkRead');
+  var markUnreadBtn = document.getElementById('batchMarkUnread');
+  if (markReadBtn) markReadBtn.style.display = isInbox ? '' : 'none';
+  if (markUnreadBtn) markUnreadBtn.style.display = isInbox ? '' : 'none';
+  if (_selectedIds.size > 0) {
+    toolbar.classList.add('visible');
+    info.textContent = '已选 ' + _selectedIds.size + ' 封';
+    // 全选框：全部选中时勾上
+    var totalCards = document.querySelectorAll('#listCards .card').length;
+    selectAll.checked = _selectedIds.size === totalCards && totalCards > 0;
+  } else {
+    toolbar.classList.remove('visible');
+    selectAll.checked = false;
+  }
 }
 
 /* ── 邮件详情（正文用沙箱 iframe 渲染，防 XSS 且不被转义） ── */
@@ -891,7 +1175,9 @@ function openDetail(messageId) {
       '<div class="card-actions">' +
       '<button class="btn primary small" data-reply="' + esc(m.id) + '">回复</button>' +
       '<button class="btn small" data-forward="' + esc(m.id) + '">转发</button>' +
-      '<button class="btn small" data-mark-read="' + esc(m.id) + '">✓ 标为已读</button>' +
+      '<button class="btn small" data-toggle-read="' + esc(m.id) + '" data-is-read="' + (m.read ? '1' : '0') + '">' + (m.read ? svgIcon('check') + ' 已读' : svgIcon('edit') + ' 未读') + '</button>' +
+      '<button class="btn small" data-summarize="' + esc(m.id) + '">' + svgIcon('sparkles') + ' 总结</button>' +
+      '<button class="btn small" data-translate="' + esc(m.id) + '">' + svgIcon('language') + ' 翻译</button>' +
       '<button class="btn small" onclick="navigateTo(\'list\')">返回</button>' +
       '</div></div>';
     var bodyHtml;
@@ -903,7 +1189,7 @@ function openDetail(messageId) {
       bodyHtml = '<div class="empty">（无正文）</div>';
     }
     var attHtml = attachmentsHtml(m.attachments);
-    box.innerHTML = head + bodyHtml + attHtml;
+    box.innerHTML = head + bodyHtml + attHtml + '<div class="ai-panel" id="aiPanel" style="display:none"></div>';
     if (b.html) {
       var f = box.querySelector('iframe.mail-body-frame');
       // 把 cid: 内嵌图与外部 http(s) 图片都改写成可被沙箱 iframe 加载的地址
@@ -969,25 +1255,62 @@ function openCompose(mode, original) {
   navigateTo('compose');
 }
 
-/* ── 标记已读 ── */
-function markRead(messageId, read) {
+/* ── 标记已读/未读 ── */
+function markReadStatus(messageId, read) {
   if (!state.accountId || !messageId) return Promise.resolve(null);
   return api('/mark-read', {
     method: 'POST',
-    body: JSON.stringify({ accountId: state.accountId, messageId: messageId, folder: state.folderId || 'INBOX' })
+    body: JSON.stringify({ accountId: state.accountId, messageId: messageId, folder: state.folderId || 'INBOX', read: !!read })
   }).then(function (r) { return r.json(); }).then(function (d) {
     if (d && d.ok) {
       var card = document.querySelector('.card[data-message-id="' + cssEscape(messageId) + '"]');
-      if (card) card.classList.remove('unread');
-      // 折叠右侧未读小圆点
+      if (card) {
+        if (read) card.classList.remove('unread'); else card.classList.add('unread');
+      }
+      // 折叠/显示右侧未读小圆点
       var dot = card && card.querySelector('.badge-dot');
-      if (dot) dot.parentNode.removeChild(dot);
+      if (read && dot) dot.parentNode.removeChild(dot);
+      else if (!read && card && !dot) {
+        var titleEl = card.querySelector('.card-title');
+        if (titleEl) titleEl.insertAdjacentHTML('beforeend', '<span class="badge-dot" title="未读"></span>');
+      }
       // 顶部未读总数
       var cards = document.querySelectorAll('.card.unread');
       document.getElementById('metricUnread').textContent = cards.length;
     }
     return d;
   }).catch(function () { return null; });
+}
+// 兼容旧调用
+function markRead(messageId, read) { return markReadStatus(messageId, read); }
+
+// 调用后端 LLM 做总结 / 翻译，结果渲染到详情页 ai-panel
+function aiAction(action, messageId) {
+  if (!state.accountId || !messageId) { toast('请先选择账号'); return; }
+  // 检查 LLM 配置
+  var cfg = getLlmConfig();
+  if (!cfg || !cfg.baseUrl || !cfg.model) {
+    toast('请先在「同步」页面配置 LLM（AI 总结/翻译需要）');
+    navigateTo('settings');
+    return;
+  }
+  var panel = document.getElementById('aiPanel');
+  if (!panel) return;
+  var label = action === 'summarize' ? '总结' : '翻译';
+  panel.style.display = 'block';
+  panel.innerHTML = '<div class="ai-loading"><span class="spinner"></span> ' + label + '中…</div>';
+  api('/' + action, {
+    method: 'POST',
+    body: JSON.stringify({ accountId: state.accountId, messageId: messageId, targetLang: '中文', llmConfig: getLlmConfig() })
+  }).then(function (r) { return r.json(); }).then(function (d) {
+    if (d && d.ok) {
+      var text = d.data || '';
+      panel.innerHTML = '<div class="ai-panel-head">' + svgIcon(action === 'summarize' ? 'sparkles' : 'language') + ' ' + label + '结果</div>' +
+        '<div class="ai-panel-body">' + esc(text) + '</div>';
+    } else {
+      panel.innerHTML = '<div class="ai-error">无法' + label + '：' + esc(d && d.error ? d.error : '未知错误') + '</div>';
+    }
+  }).catch(function () { panel.innerHTML = '<div class="ai-error">请求失败，请稍后重试</div>'; });
 }
 
 // ── 搜索 ──
@@ -1045,32 +1368,168 @@ document.getElementById('composeForm').onsubmit = function (e) {
   var to = document.getElementById('cmpTo').value.trim();
   var subject = document.getElementById('cmpSubject').value.trim();
   var bodyText = document.getElementById('cmpBody').value;
+  var ccRaw = document.getElementById('cmpCc').value.trim();
+  var bccRaw = document.getElementById('cmpBcc').value.trim();
   if (!to || !subject || !bodyText) { toast('收件人、主题、正文都要填'); return; }
   if (!state.accountId) { toast('请先选择账号'); return; }
+
+  var cc = ccRaw ? ccRaw.split(',').map(function (s) { return s.trim(); }).filter(Boolean) : [];
+  var bcc = bccRaw ? bccRaw.split(',').map(function (s) { return s.trim(); }).filter(Boolean) : [];
+
+  var fileInput = document.getElementById('cmpAttach');
+  var files = fileInput.files || [];
   toast('发送中…');
-  api('/send', { method: 'POST', body: JSON.stringify({
-    accountId: state.accountId, to: to, subject: subject, body: bodyText,
-    messageId: (mode === 'reply' && originalId) ? originalId : ''
-  }) }).then(function (r) { return r.json(); }).then(function (d) {
-    if (d && d.ok) { toast('已发送 ✦'); navigateTo('list'); }
-    else { toast('发送失败：' + (d && d.error ? d.error : '未知错误')); }
+
+  readFilesAsBase64(files).then(function (attachments) {
+    var payload = {
+      accountId: state.accountId,
+      to: to,
+      subject: subject,
+      body: bodyText,
+      cc: cc,
+      bcc: bcc,
+      attachments: attachments
+    };
+    var endpoint;
+    if (mode === 'forward' && originalId) {
+      payload.messageId = originalId;
+      endpoint = '/forward';
+    } else if (mode === 'reply' && originalId) {
+      payload.messageId = originalId;
+      endpoint = '/send';
+    } else {
+      endpoint = '/send';
+    }
+    return api(endpoint, { method: 'POST', body: JSON.stringify(payload) })
+      .then(function (r) {
+        if (r.status === 202) return r.json().then(function () { return waitForDeps().then(function () { return api(endpoint, { method: 'POST', body: JSON.stringify(payload) }).then(function (r2) { return r2.json(); }); }); });
+        return r.json();
+      })
+      .then(function (d) {
+        if (d && d.ok) { toast('已发送'); navigateTo('list'); }
+        else if (!(d && d.installing)) { toast('发送失败：' + (d && d.error ? d.error : '未知错误')); }
+      });
   }).catch(function () { toast('发送失败'); });
 };
+
+// 把选中的文件读成 base64，随 JSON 一并提交给后端
+function readFilesAsBase64(files) {
+  return Promise.all(Array.prototype.map.call(files, function (file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function () {
+        var base64 = String(reader.result).split(',')[1] || '';
+        resolve({ filename: file.name, contentType: file.type || 'application/octet-stream', base64: base64 });
+      };
+      reader.onerror = function () { reject(reader.error); };
+      reader.readAsDataURL(file);
+    });
+  }));
+}
+
+/* ── 依赖自动安装等待（轮询 /deps-status 直到 ready）── */
+function waitForDeps() {
+  return new Promise(function (resolve) {
+    var toastEl = toast('正在安装后端依赖，首次加载可能需要 1-2 分钟…');
+    var attempts = 0;
+    var maxAttempts = 90; // 90 * 2s = 3 分钟超时
+    function poll() {
+      api('/deps-status').then(function (r) { return r.json(); }).then(function (s) {
+        if (s && s.ready) {
+          resolve(true);
+        } else if (++attempts >= maxAttempts) {
+          toast('依赖安装超时，请手动执行：cd backend && npm install');
+          resolve(false);
+        } else {
+          setTimeout(poll, 2000);
+        }
+      }).catch(function () { setTimeout(poll, 3000); });
+    }
+    poll();
+  });
+}
 
 /* ── 同步 ── */
 document.getElementById('syncBtn').onclick = function () {
   if (!state.accountId) { toast('请先选择一个账号'); return; }
   toast('正在同步…');
-  api('/sync', { method: 'POST', body: JSON.stringify({ accountId: state.accountId, folder: state.folderId }) }).then(function (r) { return r.json(); }).then(function (d) {
+  api('/sync', { method: 'POST', body: JSON.stringify({ accountId: state.accountId, folder: state.folderId }) }).then(function (r) {
+    if (r.status === 202) return r.json().then(function (d) { return waitForDeps().then(function (ok) { if (ok) { toast('依赖已就绪，正在同步…'); return doSync(); } }); });
+    return r.json();
+  }).then(function (d) {
     if (d && d.ok) {
-      toast('同步完成 ✦');
+      toast('同步完成');
+      document.getElementById('syncStatus').textContent = '上次同步：' + new Date().toLocaleTimeString();
+      loadFolders(state.accountId);
+    } else if (!(d && d.installing)) {
+      toast('同步失败：' + (d && d.error ? d.error : '未知错误'));
+    }
+  }).catch(function () { toast('同步失败'); });
+};
+
+function doSync() {
+  return api('/sync', { method: 'POST', body: JSON.stringify({ accountId: state.accountId, folder: state.folderId }) }).then(function (r) { return r.json(); }).then(function (d) {
+    if (d && d.ok) {
+      toast('同步完成');
       document.getElementById('syncStatus').textContent = '上次同步：' + new Date().toLocaleTimeString();
       loadFolders(state.accountId);
     } else {
       toast('同步失败：' + (d && d.error ? d.error : '未知错误'));
     }
-  }).catch(function () { toast('同步失败'); });
-};
+    return d;
+  });
+}
+
+/* ── 批量操作 ── */
+document.getElementById('selectAllCheck').addEventListener('change', function () {
+  var cards = document.querySelectorAll('#listCards .card');
+  if (this.checked) {
+    cards.forEach(function (c) { _selectedIds.add(c.dataset.messageId); });
+  } else {
+    _selectedIds.clear();
+  }
+  updateCardSelection();
+  updateBatchUI();
+});
+document.getElementById('batchCancel').addEventListener('click', function () {
+  _selectedIds.clear();
+  updateCardSelection();
+  updateBatchUI();
+});
+document.getElementById('batchMarkRead').addEventListener('click', function () {
+  if (!_selectedIds.size || !state.accountId) return;
+  var ids = Array.from(_selectedIds);
+  var done = 0;
+  ids.forEach(function (id) {
+    markReadStatus(id, true).then(function (d) { done++; if (done === ids.length) { toast('已标记 ' + ids.length + ' 封为已读'); _selectedIds.clear(); updateCardSelection(); updateBatchUI(); loadMessages(state.accountId, state.folderId); loadFolders(state.accountId); } });
+  });
+});
+document.getElementById('batchMarkUnread').addEventListener('click', function () {
+  if (!_selectedIds.size || !state.accountId) return;
+  var ids = Array.from(_selectedIds);
+  var done = 0;
+  ids.forEach(function (id) {
+    markReadStatus(id, false).then(function (d) { done++; if (done === ids.length) { toast('已标记 ' + ids.length + ' 封为未读'); _selectedIds.clear(); updateCardSelection(); updateBatchUI(); loadMessages(state.accountId, state.folderId); loadFolders(state.accountId); } });
+  });
+});
+document.getElementById('batchDelete').addEventListener('click', function () {
+  if (!_selectedIds.size || !state.accountId) return;
+  var count = _selectedIds.size;
+  if (!confirm('确定要删除选中的 ' + count + ' 封邮件吗？')) return;
+  var ids = Array.from(_selectedIds);
+  var done = 0;
+  ids.forEach(function (id) {
+    api('/messages/' + encodeURIComponent(id) + '?accountId=' + encodeURIComponent(state.accountId), { method: 'DELETE' }).then(function (r) { return r.json(); }).then(function (d) {
+      done++;
+      if (done === ids.length) {
+        toast('已删除 ' + count + ' 封邮件');
+        _selectedIds.clear(); updateBatchUI();
+        loadMessages(state.accountId, state.folderId);
+        loadFolders(state.accountId);
+      }
+    }).catch(function () { done++; });
+  });
+});
 
 /* ── 全局点击委托 ── */
 document.addEventListener('click', function (e) {
@@ -1105,21 +1564,27 @@ document.addEventListener('click', function (e) {
     });
     return;
   }
-  var mark = e.target.closest('[data-mark-read]');
+  var mark = e.target.closest('[data-toggle-read]');
   if (mark) {
-    var mid = mark.getAttribute('data-mark-read');
-    markRead(mid, true).then(function (d) {
+    var mid = mark.getAttribute('data-toggle-read');
+    var currentlyRead = mark.getAttribute('data-is-read') === '1';
+    var newRead = !currentlyRead;
+    markReadStatus(mid, newRead).then(function (d) {
       if (d && d.ok) {
-        var msg = (d.data && d.data.fallback)
-          ? '本地已标记 ✓（远端标记失败：可能缺少 mail-cli）'
-          : '已标记为已读 ✓';
-        toast(msg);
-        mark.textContent = '✓ 已读'; mark.disabled = true;
+        mark.setAttribute('data-is-read', newRead ? '1' : '0');
+        mark.innerHTML = newRead ? svgIcon('check') + ' 已读' : svgIcon('edit') + ' 未读';
+        toast(newRead ? '已标记为已读' : '已标记为未读');
+        loadFolders(state.accountId);
       }
       else { toast('标记失败：' + (d && d.error || '未知错误')); }
     });
     return;
   }
+
+  var summarize = e.target.closest('[data-summarize]');
+  if (summarize) { aiAction('summarize', summarize.getAttribute('data-summarize')); return; }
+  var translate = e.target.closest('[data-translate]');
+  if (translate) { aiAction('translate', translate.getAttribute('data-translate')); return; }
 
   var attPreview = e.target.closest('[data-att-preview]');
   if (attPreview) {
@@ -1190,7 +1655,7 @@ window.updateAccountFields = function () {
 
     api('/accounts', { method: 'POST', body: JSON.stringify(payload) }).then(function (r) { return r.json(); }).then(function (d) {
       if (d && d.ok) {
-        toast('账号已保存 ✦');
+        toast('账号已保存');
         form.reset(); updateAccountFields(); loadAccounts();
       } else {
         toast('保存失败：' + (d && d.error ? d.error : '未知错误'));
@@ -1198,6 +1663,229 @@ window.updateAccountFields = function () {
     }).catch(function () { toast('保存失败'); });
   };
 })();
+
+/* ── LLM 设置管理（多配置支持）── */
+var LLM_STORAGE_KEY = 'hanako-mail-llm-configs';
+var _activeLLMId = null;  // 当前编辑/选中的配置 id
+
+// 取全部配置（数组）
+function getLlmConfigs() {
+  try {
+    var arr = JSON.parse(localStorage.getItem(LLM_STORAGE_KEY));
+    return Array.isArray(arr) ? arr : [];
+  } catch (e) { return []; }
+}
+// 取当前激活配置
+function getLlmConfig() {
+  var cfgs = getLlmConfigs();
+  if (!cfgs.length) return null;
+  return cfgs.find(function (c) { return c.id === _activeLLMId; }) || cfgs[cfgs.length - 1];
+}
+function _genId(prefix) {
+  return (prefix || 'cfg') + '-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
+}
+// 保存/更新当前配置（upsert）
+function saveLlmConfig(cfg) {
+  try {
+    var cfgs = getLlmConfigs();
+    if (_activeLLMId) {
+      var idx = cfgs.findIndex(function (c) { return c.id === _activeLLMId; });
+      if (idx >= 0) { cfgs[idx] = cfg; }
+      else { cfgs.push(cfg); }
+    } else {
+      cfgs.push(cfg);
+    }
+    localStorage.setItem(LLM_STORAGE_KEY, JSON.stringify(cfgs));
+    _activeLLMId = cfg.id;
+    return true;
+  } catch (e) { return false; }
+}
+function deleteLlmConfig(id) {
+  var cfgs = getLlmConfigs().filter(function (c) { return c.id !== id; });
+  localStorage.setItem(LLM_STORAGE_KEY, JSON.stringify(cfgs));
+  if (_activeLLMId === id) _activeLLMId = cfgs.length ? cfgs[cfgs.length - 1].id : null;
+}
+function populateLlmForm(cfg) {
+  if (!cfg) {
+    document.getElementById('llmName').value = '';
+    document.getElementById('llmProvider').value = '';
+    document.getElementById('llmBaseUrl').value = '';
+    document.getElementById('llmApiKey').value = '';
+    document.getElementById('llmModel').value = '';
+    document.getElementById('llmActiveNote').textContent = '';
+    document.getElementById('llmDeleteBtn').style.display = 'none';
+    return;
+  }
+  document.getElementById('llmName').value = cfg.name || '';
+  document.getElementById('llmProvider').value = cfg.provider || '';
+  document.getElementById('llmBaseUrl').value = cfg.baseUrl || '';
+  document.getElementById('llmApiKey').value = cfg.apiKey || '';
+  document.getElementById('llmModel').value = cfg.model || '';
+  document.getElementById('llmDeleteBtn').style.display = cfg.id ? '' : 'none';
+  // 来源提示
+  var note = document.getElementById('llmActiveNote');
+  if (cfg.note) {
+    var parts = [cfg.note];
+    if (cfg.needsKey) parts.push('<span class="warn">需补全 API Key</span>');
+    if (cfg.needsBaseUrl) parts.push('<span class="warn">需补全 Base URL（agnes 等内置供应商请填其网关地址）</span>');
+    note.innerHTML = parts.join(' ｜ ');
+  } else {
+    note.textContent = '';
+  }
+}
+// 渲染芯片列表
+function renderLlmChips() {
+  var container = document.getElementById('llmPresets');
+  // 清掉旧芯片（保留第一个说明 span）
+  container.querySelectorAll('.preset-chip').forEach(function (c) { c.remove(); });
+  var cfgs = getLlmConfigs();
+  if (!cfgs.length) {
+    var hint = document.createElement('span');
+    hint.style.cssText = 'font-size:11px;color:var(--text-muted);width:100%';
+    hint.textContent = '（暂无保存的配置，填写后点"保存配置"添加）';
+    container.appendChild(hint);
+    return;
+  }
+  cfgs.forEach(function (cfg) {
+    var chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'preset-chip' + (cfg.id === _activeLLMId ? ' active' : '');
+    chip.textContent = cfg.name || (cfg.model + '@' + cfg.baseUrl.replace(/^https?:\/\//, '').split('/')[0]);
+    chip.dataset.id = cfg.id;
+    chip.addEventListener('click', function () {
+      _activeLLMId = cfg.id;
+      populateLlmForm(cfg);
+      renderLlmChips();
+    });
+    container.appendChild(chip);
+  });
+}
+
+// 页面加载时恢复列表
+(function () {
+  var cfgs = getLlmConfigs();
+  if (cfgs.length) {
+    _activeLLMId = cfgs[cfgs.length - 1].id;
+    populateLlmForm(cfgs[cfgs.length - 1]);
+  }
+  renderLlmChips();
+})();
+
+// 保存配置（新增或更新）
+document.getElementById('llmForm').onsubmit = function (e) {
+  e.preventDefault();
+  var baseUrl = document.getElementById('llmBaseUrl').value.trim();
+  var model = document.getElementById('llmModel').value.trim();
+  if (!baseUrl || !model) { toast('API 地址和模型名称必填'); return; }
+  var name = document.getElementById('llmName').value.trim() || (model + '@' + baseUrl.replace(/^https?:\/\//, '').split('/')[0]);
+  var cfg = {
+    id: _activeLLMId || _genId('cfg'),
+    name: name,
+    provider: document.getElementById('llmProvider').value.trim(),
+    baseUrl: baseUrl,
+    apiKey: document.getElementById('llmApiKey').value.trim(),
+    model: model
+  };
+  saveLlmConfig(cfg);
+  renderLlmChips();
+  toast('LLM 配置已保存：' + name);
+};
+
+// 删除当前配置
+document.getElementById('llmDeleteBtn').onclick = function () {
+  if (!_activeLLMId) return;
+  if (!confirm('确定删除当前选中的 LLM 配置吗？')) return;
+  deleteLlmConfig(_activeLLMId);
+  var cfgs = getLlmConfigs();
+  if (cfgs.length) { _activeLLMId = cfgs[cfgs.length - 1].id; populateLlmForm(cfgs[cfgs.length - 1]); }
+  else { populateLlmForm(null); }
+  renderLlmChips();
+  toast('已删除该配置');
+};
+
+// 检测 Hanako 配置（追加到列表，不覆盖已有）
+document.getElementById('llmDetectBtn').onclick = function () {
+  toast('正在检测 Hanako LLM 配置…');
+  api('/llm-detect', { method: 'POST' }).then(function (r) { return r.json(); }).then(function (d) {
+    if (!d.ok || !Array.isArray(d.data) || !d.data.length) {
+      showLlmStatus('err', '未检测到 Hanako LLM 配置，请手动填写');
+      return;
+    }
+    var cfgs = getLlmConfigs();
+    // 去重：优先按 agentId+model（同 provider 不同 agent 不应被合并）
+    d.data.forEach(function (item) {
+      var key = item.agentId ? ('agent:' + item.agentId + ':' + item.model) : ('env:' + item.baseUrl + ':' + item.model);
+      var exists = cfgs.some(function (c) {
+        var ck = c.agentId ? ('agent:' + c.agentId + ':' + c.model) : ('env:' + c.baseUrl + ':' + c.model);
+        return ck === key;
+      });
+      if (!exists) {
+        cfgs.push({
+          id: _genId('detected'),
+          name: item.name || (item.model + '@' + (item.baseUrl || '').replace(/^https?:\/\//, '').split('/')[0]),
+          provider: item.provider || '',
+          agentId: item.agentId || '',
+          baseUrl: item.baseUrl || '',
+          apiKey: (item.apiKey && !item.apiKey.includes('****')) ? item.apiKey : '',  // 检测返回的 apiKey 脱敏，留空让用户填
+          model: item.model || '',
+          note: item.note || '',
+          needsKey: !!item.needsKey,
+          needsBaseUrl: !!item.needsBaseUrl
+        });
+      }
+    });
+    localStorage.setItem(LLM_STORAGE_KEY, JSON.stringify(cfgs));
+    var last = cfgs[cfgs.length - 1];
+    _activeLLMId = last.id;
+    populateLlmForm(last);
+    renderLlmChips();
+    var msg = '检测到 ' + d.data.length + ' 个 LLM 配置（按 Agent 分布），已添加到列表';
+    if (Array.isArray(d.addedModelsKeys) && d.addedModelsKeys.length) {
+      msg += '；全局凭据供应商: ' + d.addedModelsKeys.join(', ');
+    }
+    showLlmStatus('ok', msg + '。部分配置需补全 API Key / Base URL 后测试连接');
+  }).catch(function () { showLlmStatus('err', '检测失败'); });
+};
+
+// 清除全部
+document.getElementById('llmClearBtn').onclick = function () {
+  if (!confirm('确定清除全部 LLM 配置吗？')) return;
+  localStorage.removeItem(LLM_STORAGE_KEY);
+  _activeLLMId = null;
+  document.getElementById('llmName').value = '';
+  document.getElementById('llmProvider').value = '';
+  document.getElementById('llmBaseUrl').value = '';
+  document.getElementById('llmApiKey').value = '';
+  document.getElementById('llmModel').value = '';
+  document.getElementById('llmActiveNote').textContent = '';
+  renderLlmChips();
+  showLlmStatus('', '');
+  toast('已清除全部 LLM 配置');
+};
+
+// 测试连接（用当前激活配置）
+document.getElementById('llmTestBtn').onclick = function () {
+  var cfg = getLlmConfig();
+  if (!cfg || !cfg.baseUrl || !cfg.model) {
+    showLlmStatus('err', '请先保存 LLM 配置（API 地址 + 模型名称）');
+    return;
+  }
+  showLlmStatus('', '测试中…');
+  api('/llm-test', {
+    method: 'POST',
+    body: JSON.stringify({ baseUrl: cfg.baseUrl, apiKey: cfg.apiKey || '', model: cfg.model })
+  }).then(function (r) { return r.json(); }).then(function (d) {
+    if (d && d.ok) showLlmStatus('ok', '连接成功！模型: ' + (d.data || cfg.model));
+    else showLlmStatus('err', '连接失败：' + (d && d.error ? d.error : '未知错误'));
+  }).catch(function () { showLlmStatus('err', '请求异常'); });
+};
+
+function showLlmStatus(type, msg) {
+  var el = document.getElementById('llmStatus');
+  el.className = 'llm-status ' + (type || '');
+  el.textContent = msg;
+  if (!type) el.style.display = 'none'; else el.style.display = 'block';
+}
 
 /* 启动 */
 loadAccounts();

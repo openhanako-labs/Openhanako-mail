@@ -217,7 +217,22 @@ export async function getAttachmentData(accountEmail, messageId, partId) {
       base64: buf.toString("base64"),
     };
   }
-  throw new Error("getAttachmentData: AgentQQ backend does not support attachment serving yet");
+  // AgentQQ 后端：下载到临时目录后读取文件返回 base64
+  const tmpDir = path.join(TEMP_DIR, String(Date.now()));
+  fs.mkdirSync(tmpDir, { recursive: true });
+  const dl = await agentqq.downloadAttachment(messageId, partId, tmpDir);
+  const filePath = dl.savedTo ? path.join(tmpDir, dl.filename) : null;
+  if (!filePath) {
+    throw new Error("getAttachmentData: AgentQQ 附件下载未返回文件");
+  }
+  const buf = await fs.promises.readFile(filePath);
+  fs.promises.rm(tmpDir, { recursive: true }).catch(() => {});
+  return {
+    filename: dl.filename,
+    contentType: dl.contentType || "application/octet-stream",
+    size: buf.length,
+    base64: buf.toString("base64"),
+  };
 }
 
 export async function sendMail(accountEmail, options, context = {}) {
@@ -227,6 +242,8 @@ export async function sendMail(accountEmail, options, context = {}) {
     const queueEntry = queuePendingSend(accountEmail, "send", options.to, options);
     return { queued: true, queueId: queueEntry.id, reason: "external_recipient" };
   }
+  
+  options = await normalizeAttachments(config, options);
   
   let result;
   if (config.backend === "clawemail") {
@@ -254,6 +271,8 @@ export async function reply(accountEmail, messageId, options = {}) {
     return { queued: true, queueId: queueEntry.id, reason: "external_sender", originalEmail };
   }
   
+  options = await normalizeAttachments(config, options);
+  
   let result;
   if (config.backend === "clawemail") {
     result = await clawemail.replyToMail(config.apiKey, accountEmail, messageId, options);
@@ -280,9 +299,29 @@ export async function forward(accountEmail, messageId, options = {}) {
     return { queued: true, queueId: queueEntry.id, reason: "external_sender", originalEmail };
   }
   
+  options = await normalizeAttachments(config, options);
+  
   let result;
   if (config.backend === "clawemail") {
-    throw new Error("forward: ClawEmail backend does not support forward. Use reply or send instead.");
+    // ClawEmail SDK 无 forwardMail，改为读取原文后用 sendMail 转发（带原文引用与附件）
+    const fwdSubject = `Fwd: ${originalEmail.subject || ""}`;
+    const fromStr = Array.isArray(originalEmail.from) ? originalEmail.from.join(", ") : (originalEmail.from || "");
+    const toStr = Array.isArray(originalEmail.to) ? originalEmail.to.join(", ") : (originalEmail.to || "");
+    const fwdBody = (options.body ? options.body + "\n" : "") +
+      "---------- 转发的邮件 ----------\n" +
+      `发件人: ${fromStr}\n` +
+      `收件人: ${toStr}\n` +
+      `主题: ${originalEmail.subject || ""}\n\n` +
+      (originalEmail.text || "");
+    result = await clawemail.sendMail(config.apiKey, accountEmail, {
+      to: options.to,
+      cc: options.cc,
+      bcc: options.bcc,
+      subject: fwdSubject,
+      body: fwdBody,
+      html: false,
+      attachments: options.attachments || [],
+    });
   } else if (config.backend === "imap") {
     result = await imap.forwardMail(accountEmail, messageId, options);
   } else {
@@ -367,9 +406,15 @@ const COMMANDS = {
 
 function parseOptions(args) {
   const opts = {};
+  let jsonFile = null;
   for (const arg of args) {
     // Strip leading dashes (--key=value → key=value)
     const clean = arg.replace(/^-+/, '');
+    // --json=<file> 透传结构化参数（cc/bcc/attachments 等），覆盖普通 key=value
+    if (clean.startsWith("json=")) {
+      jsonFile = clean.slice("json=".length);
+      continue;
+    }
     const eqIdx = clean.indexOf('=');
     if (eqIdx > 0) {
       const key = clean.slice(0, eqIdx);
@@ -377,7 +422,59 @@ function parseOptions(args) {
       opts[key] = val;
     }
   }
+  if (jsonFile) {
+    try {
+      const extra = JSON.parse(fs.readFileSync(jsonFile, "utf-8"));
+      Object.assign(opts, extra);
+    } catch (e) {
+      // 忽略无法解析的 json 文件，退回 CLI 参数
+    }
+  }
   return opts;
+}
+
+// ── 附件归一化 ─────────────────────────────────────────
+// 前端以 base64 上传附件（{filename, contentType, base64}）。
+// 不同后端对附件的接受方式不同：
+//   - clawemail / imap：需要可访问的文件路径（imap 也可用 Buffer content）
+//   - agentqq：需要先 uploadAttachment 拿到 fileId
+// 这里统一把 base64 转成后端所需形态。
+
+const UPLOAD_DIR = path.join(DATA_DIR, "_uploads");
+
+function writeTempFile(att) {
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+  const safeName = path.basename(att.filename || `attachment_${Date.now()}`);
+  const filePath = path.join(UPLOAD_DIR, `${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${safeName}`);
+  const buf = Buffer.from(att.base64 || "", "base64");
+  fs.writeFileSync(filePath, buf);
+  return filePath;
+}
+
+async function normalizeAttachments(config, options) {
+  const atts = options.attachments;
+  if (!Array.isArray(atts) || atts.length === 0) return options;
+
+  if (config.backend === "agentqq") {
+    const fileIds = [];
+    for (const a of atts) {
+      const p = writeTempFile(a);
+      const fid = await agentqq.uploadAttachment(p);
+      fileIds.push(fid);
+    }
+    const next = { ...options };
+    delete next.attachments;
+    next.fileIds = fileIds;
+    return next;
+  }
+
+  // clawemail / imap：转成带 path 的附件描述
+  const withPaths = atts.map((a) => ({
+    filename: a.filename || path.basename(a.path || "attachment"),
+    path: a.path || writeTempFile(a),
+    contentType: a.contentType,
+  }));
+  return { ...options, attachments: withPaths };
 }
 
 // Detect CLI mode

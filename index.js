@@ -76,7 +76,34 @@ function autoInstallDeps() {
 }
 
 let wsMonitorProc = null;
+let wsMonitorShutdown = false;
+const WS_PID_FILE = path.join(DATA_DIR, ".ws-monitor.pid");
+
+function writeWsPid(pid) {
+  try { fs.writeFileSync(WS_PID_FILE, String(pid)); } catch {}
+}
+function clearWsPid() {
+  try { fs.unlinkSync(WS_PID_FILE); } catch {}
+}
+
+function killWsTree(proc) {
+  if (!proc || proc.pid == null) return;
+  const pid = proc.pid;
+  try {
+    // 优先 SIGTERM（Linux/Mac 走 ws-monitor 优雅退出 handler）
+    proc.kill("SIGTERM");
+  } catch {}
+  // Windows 兜底：强制杀整棵进程树（TerminateProcess 不触发 handler，但能立刻腾出文件锁）
+  if (process.platform === "win32") {
+    try {
+      const { spawnSync } = require("node:child_process");
+      spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+    } catch {}
+  }
+}
+
 function startWsMonitor() {
+  if (wsMonitorShutdown) return; // 已卸载，不再拉起
   if (wsMonitorProc) return; // 已在运行
   try {
     const proc = spawn(process.execPath, [WS_MONITOR_PATH], {
@@ -86,15 +113,23 @@ function startWsMonitor() {
       shell: true,
     });
     wsMonitorProc = proc;
+    writeWsPid(proc.pid);
     proc.stdout?.on("data", (d) => console.log("[ws-monitor]", d.toString().trim()));
     proc.stderr?.on("data", (d) => console.warn("[ws-monitor]", d.toString().trim()));
     proc.on("close", (code) => {
       wsMonitorProc = null;
+      clearWsPid();
+      if (wsMonitorShutdown) {
+        console.log("[ws-monitor] 已随插件卸载退出，不再重启");
+        return;
+      }
       console.warn(`[ws-monitor] 退出: ${code}，10秒后重启...`);
       setTimeout(startWsMonitor, 10000);
     });
     proc.on("error", (e) => {
       wsMonitorProc = null;
+      clearWsPid();
+      if (wsMonitorShutdown) return;
       console.warn("[ws-monitor] 启动失败", { error: e.message });
       setTimeout(startWsMonitor, 30000);
     });
@@ -116,10 +151,18 @@ export default class HanakoMailPlugin {
     }
 
     // 启动 WebSocket 实时收件监听
+    wsMonitorShutdown = false;
     startWsMonitor();
   }
 
   async onunload() {
-    this.ctx.log?.info?.("hanako-mail unloaded");
+    const ctx = this.ctx;
+    ctx.log?.info?.("hanako-mail unloaded");
+    wsMonitorShutdown = true;
+    if (wsMonitorProc) {
+      killWsTree(wsMonitorProc);
+      wsMonitorProc = null;
+    }
+    clearWsPid();
   }
 }

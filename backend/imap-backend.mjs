@@ -233,7 +233,7 @@ export async function readMessage(email, messageId, options = {}) {
 }
 
 export async function sendMail(email, options) {
-  const { to, subject, body, html = false } = options;
+  const { to, cc, bcc, subject, body, html = false, attachments = [] } = options;
   if (!to) throw new Error("sendMail: 'to' is required");
   if (!subject) throw new Error("sendMail: 'subject' is required");
   if (!body) throw new Error("sendMail: 'body' is required");
@@ -247,6 +247,15 @@ export async function sendMail(email, options) {
     subject,
     [html ? "html" : "text"]: body,
   };
+  if (cc) mailOptions.cc = Array.isArray(cc) ? cc.join(", ") : cc;
+  if (bcc) mailOptions.bcc = Array.isArray(bcc) ? bcc.join(", ") : bcc;
+  if (attachments && attachments.length) {
+    mailOptions.attachments = attachments.map((a) => ({
+      filename: a.filename || path.basename(a.path || "attachment"),
+      path: a.path,
+      contentType: a.contentType,
+    }));
+  }
 
   const info = await transporter.sendMail(mailOptions);
   transporter.close();
@@ -257,7 +266,7 @@ export async function replyToMail(email, messageId, options = {}) {
   const original = await readMessage(email, messageId);
   if (!original || original.error) throw new Error(`reply: original message not found (${messageId})`);
 
-  const { body, html = false } = options;
+  const { body, html = false, cc, attachments = [] } = options;
   if (!body) throw new Error("replyToMail: 'body' is required");
 
   const smtpConfig = getSmtpConfig(email);
@@ -271,6 +280,14 @@ export async function replyToMail(email, messageId, options = {}) {
     inReplyTo: messageId,
     references: messageId,
   };
+  if (cc) mailOptions.cc = Array.isArray(cc) ? cc.join(", ") : cc;
+  if (attachments && attachments.length) {
+    mailOptions.attachments = attachments.map((a) => ({
+      filename: a.filename || path.basename(a.path || "attachment"),
+      path: a.path,
+      contentType: a.contentType,
+    }));
+  }
 
   const info = await transporter.sendMail(mailOptions);
   transporter.close();
@@ -319,7 +336,7 @@ export async function downloadAttachment(email, messageId, partId, outputDir) {
 }
 
 export async function forwardMail(email, messageId, options = {}) {
-  const { to, subject, body, html = false, includeOriginal = true } = options;
+  const { to, subject, body, html = false, includeOriginal = true, cc, bcc, attachments = [] } = options;
   if (!to) throw new Error("forwardMail: 'to' is required");
 
   const original = await readMessage(email, messageId);
@@ -350,6 +367,15 @@ export async function forwardMail(email, messageId, options = {}) {
     subject: finalSubject,
     [html ? "html" : "text"]: forwardBody,
   };
+  if (cc) mailOptions.cc = Array.isArray(cc) ? cc.join(", ") : cc;
+  if (bcc) mailOptions.bcc = Array.isArray(bcc) ? bcc.join(", ") : bcc;
+  if (attachments && attachments.length) {
+    mailOptions.attachments = attachments.map((a) => ({
+      filename: a.filename || path.basename(a.path || "attachment"),
+      path: a.path,
+      contentType: a.contentType,
+    }));
+  }
 
   const info = await transporter.sendMail(mailOptions);
   transporter.close();

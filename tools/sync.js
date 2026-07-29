@@ -57,7 +57,7 @@ function readWsCache(ctx, accountId) {
 }
 
 function readEmailMonitorData(accountEmail) {
-  const base = path.join("W:\\", "Games", "Hanako", "Work", "projects", "email-monitor", "data");
+  const base = process.env.EMAIL_MONITOR_DATA_DIR || path.join("W:\\", "Games", "Hanako", "Work", "projects", "email-monitor", "data");
   const files = [];
   try {
     const entries = fs.readdirSync(base);

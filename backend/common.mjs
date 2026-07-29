@@ -32,7 +32,7 @@ export function normalizeFolder(f, accountId) {
     path: String(f.id ?? name),
     type: mapType(name),
     unreadCount: Number(f.unread ?? 0),
-    totalCount: Number(f.unread ?? 0),
+    totalCount: Number(f.total ?? f.totalCount ?? 0),
   };
 }
 

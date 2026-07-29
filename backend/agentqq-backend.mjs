@@ -142,13 +142,14 @@ export async function replyToMail(messageId, options = {}) {
 }
 
 export async function forwardMail(messageId, options = {}) {
-  const { to, body, includeAttachments = false, confirmSend = false } = options;
+  const { to, body, includeAttachments = false, confirmSend = false, fileIds = [] } = options;
   if (!to) throw new Error("forwardMail: 'to' is required");
 
   const args = ["message", "+forward", `--id=${messageId}`];
   for (const t of (Array.isArray(to) ? to : [to])) args.push(`--to=${t}`);
   if (body) args.push(`--body=${body}`);
   if (includeAttachments) args.push("--include-attachments");
+  for (const fid of (Array.isArray(fileIds) ? fileIds : []).slice(0, 3)) args.push(`--attachment-file-id=${fid}`);
   if (confirmSend) args.push("--confirm-send");
 
   const result = await runAgentlyCli(args);

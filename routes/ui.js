@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 
+import * as llm from "../backend/llm.mjs";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -122,6 +124,8 @@ function resolveAccount(accountsList, accountId) {
 }
 
 // 检查后端依赖是否完整
+// 返回 null(OK) / { error, hint }(缺失且未在安装) / { installing: true }(正在后台安装)
+const INSTALL_LOCK = path.join(BACKEND_DIR, "data", ".hanako-auto-install.lock");
 function checkBackendDeps(account) {
   if (!account) return null;
   const email = (account.email || "").toLowerCase();
@@ -130,6 +134,7 @@ function checkBackendDeps(account) {
   if (email.endsWith("@claw.163.com")) {
     const sdkPath = path.join(BACKEND_DIR, "node_modules", "@clawemail", "node-sdk", "package.json");
     if (!fs.existsSync(sdkPath)) {
+      if (fs.existsSync(INSTALL_LOCK)) return { installing: true };
       return { error: "ClawEmail SDK 未安装。请先在 backend/ 目录执行 npm install，或改用其他后端。", hint: "cd backend && npm install" };
     }
   }
@@ -139,11 +144,21 @@ function checkBackendDeps(account) {
     const imapPath = path.join(BACKEND_DIR, "node_modules", "imap", "package.json");
     const nmPath = path.join(BACKEND_DIR, "node_modules", "nodemailer", "package.json");
     if (!fs.existsSync(imapPath) || !fs.existsSync(nmPath)) {
+      if (fs.existsSync(INSTALL_LOCK)) return { installing: true };
       return { error: "IMAP 依赖未安装。请先在 backend/ 目录执行 npm install，否则个人邮箱无法使用。", hint: "cd backend && npm install" };
     }
   }
 
   return null;
+}
+
+// 统一处理依赖检查结果：安装中→返回 202，缺失→返回 400，OK→返回 false
+function handleDepIssue(c, depIssue) {
+  if (!depIssue) return false; // 无问题
+  if (depIssue.installing) {
+    return c.json({ ok: false, installing: true, message: "后端依赖正在自动安装中，请稍候…" }, 202);
+  }
+  return c.json({ ok: false, error: depIssue.error, hint: depIssue.hint }, 400);
 }
 
 // 将 account 的 apiKey / email / IMAP 配置透传给后端子进程。
@@ -332,7 +347,7 @@ export default function (app, ctx) {
   }
 
   function readEmailMonitorData(accountEmail) {
-    const base = path.join("W:\\", "Games", "Hanako", "Work", "projects", "email-monitor", "data");
+    const base = process.env.EMAIL_MONITOR_DATA_DIR || path.join("W:\\", "Games", "Hanako", "Work", "projects", "email-monitor", "data");
     const files = [];
     try {
       const entries = fs.readdirSync(base);
@@ -517,27 +532,140 @@ export default function (app, ctx) {
     }
   };
 
+  // 把结构化发送参数（含 cc/bcc/附件）写入临时 JSON 文件，供 inbox.mjs 以 --json= 读取，
+  // 避免 CLI 参数无法表达数组/二进制附件的问题。
+  function writeInboxOptions(obj) {
+    const dir = path.join(BACKEND_DIR, "data", "_tmp");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `opts_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.json`);
+    fs.writeFileSync(file, JSON.stringify(obj), "utf-8");
+    return file;
+  }
+  function safeUnlink(p) {
+    try { if (p) fs.unlinkSync(p); } catch {}
+  }
+
   const postSend = async (c) => {
     const body = await c.req.json().catch(() => ({}));
-    const { accountId, to, subject, body: text, messageId } = body;
+    const { accountId, to, subject, body: text, messageId, cc, bcc, attachments } = body;
     if (!accountId) return c.json({ ok: false, error: "accountId is required" });
     const account = resolveAccount(accounts(), accountId);
     if (!account) return c.json({ ok: false, error: "account not found" });
 
     const depIssue = checkBackendDeps(account);
-    if (depIssue) return c.json({ ok: false, error: depIssue.error, hint: depIssue.hint }, 400);
+    if (handleDepIssue(c, depIssue)) return;
 
+    const optsFile = writeInboxOptions({ to, subject, body: text, cc, bcc, attachments });
     try {
       let result;
       if (messageId) {
-        result = await runInbox(["reply", account.email, messageId, `--body=${text}`], inboxEnvFor(account));
+        result = await runInbox(["reply", account.email, messageId, `--json=${optsFile}`], inboxEnvFor(account));
       } else {
-        result = await runInbox(["send", account.email, `--to=${to}`, `--subject=${subject}`, `--body=${text}`], inboxEnvFor(account));
+        result = await runInbox(["send", account.email, `--json=${optsFile}`], inboxEnvFor(account));
       }
       if (result.error) return c.json({ ok: false, error: result.error });
       return c.json({ ok: true, data: result });
     } catch (e) {
       return c.json({ ok: false, error: e.message });
+    } finally {
+      safeUnlink(optsFile);
+    }
+  };
+
+  const postForward = async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const { accountId, to, subject, body: text, messageId, cc, bcc, attachments } = body;
+    if (!accountId) return c.json({ ok: false, error: "accountId is required" });
+    if (!messageId) return c.json({ ok: false, error: "messageId is required" });
+    const account = resolveAccount(accounts(), accountId);
+    if (!account) return c.json({ ok: false, error: "account not found" });
+
+    const depIssue = checkBackendDeps(account);
+    if (handleDepIssue(c, depIssue)) return;
+
+    const optsFile = writeInboxOptions({ to, subject, body: text, cc, bcc, attachments });
+    try {
+      const result = await runInbox(["forward", account.email, messageId, `--json=${optsFile}`], inboxEnvFor(account));
+      if (result.error) return c.json({ ok: false, error: result.error });
+      return c.json({ ok: true, data: result });
+    } catch (e) {
+      return c.json({ ok: false, error: e.message });
+    } finally {
+      safeUnlink(optsFile);
+    }
+  };
+
+  // 从邮件对象抽取纯文本（用于 LLM 处理）
+  function plainOf(m) {
+    if (!m) return "";
+    if (typeof m.text === "string" && m.text.trim()) return m.text;
+    if (typeof m.body === "string" && m.body.trim()) return m.body;
+    if (typeof m.snippet === "string" && m.snippet.trim()) return m.snippet;
+    if (typeof m.textBody === "string" && m.textBody.trim()) return m.textBody;
+    return "";
+  }
+
+  // 读取单封邮件正文（供总结/翻译复用）
+  const readMailPlain = async (account, messageId) => {
+    const result = await runInbox(["read", account.email, messageId], inboxEnvFor(account));
+    if (result.error) throw new Error(result.error);
+    const text = plainOf(result);
+    if (!text) throw new Error("该邮件没有可处理的纯文本内容（或为纯图片邮件）");
+    return text;
+  };
+
+  const postSummarize = async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const accountId = body?.accountId || "";
+    const messageId = body?.messageId || "";
+    const targetLang = body?.targetLang || "中文";
+    const llmCfg = body?.llmConfig || null; // 前端传来的自定义 LLM 配置
+    if (!accountId || !messageId) return c.json({ ok: false, error: "accountId 和 messageId 必填" });
+    const account = resolveAccount(accounts(), accountId);
+    if (!account) return c.json({ ok: false, error: "account not found" });
+
+    const depIssue = checkBackendDeps(account);
+    if (handleDepIssue(c, depIssue)) return;
+
+    try {
+      const text = await readMailPlain(account, messageId);
+      // 构建选项：前端配置优先，否则走环境变量默认值
+      const opts = llmCfg ? {
+        baseUrl: llmCfg.baseUrl,
+        apiKey: llmCfg.apiKey,
+        model: llmCfg.model,
+      } : {};
+      const summary = await llm.summarizeMail(text, targetLang, opts);
+      return c.json({ ok: true, data: summary });
+    } catch (e) {
+      return c.json({ ok: false, error: String(e.message || e) });
+    }
+  };
+
+  const postTranslate = async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const accountId = body?.accountId || "";
+    const messageId = body?.messageId || "";
+    const targetLang = body?.targetLang || "中文";
+    const llmCfg = body?.llmConfig || null;
+    if (!accountId || !messageId) return c.json({ ok: false, error: "accountId 和 messageId 必填" });
+    const account = resolveAccount(accounts(), accountId);
+    if (!account) return c.json({ ok: false, error: "account not found" });
+
+    const depIssue = checkBackendDeps(account);
+    if (handleDepIssue(c, depIssue)) return;
+
+    try {
+      const text = await readMailPlain(account, messageId);
+      const opts = llmCfg ? {
+        baseUrl: llmCfg.baseUrl,
+        apiKey: llmCfg.apiKey,
+        model: llmCfg.model,
+      } : {};
+      const translated = await llm.translateMail(text, targetLang, opts);
+      return c.json({ ok: true, data: translated });
+    } catch (e) {
+      return c.json({ ok: false, error: String(e.message || e) });
     }
   };
 
@@ -546,37 +674,42 @@ export default function (app, ctx) {
     const accountId = body?.accountId || "";
     const messageId = body?.messageId || "";
     const folder = body?.folder || "INBOX";
+    const wantRead = body?.read !== false; // 默认 true（标已读），false = 标未读
     if (!accountId || !messageId) return c.json({ ok: false, error: "accountId/messageId is required" });
     const account = resolveAccount(accounts(), accountId);
     if (!account) return c.json({ ok: false, error: "account not found" });
 
     const depIssue = checkBackendDeps(account);
-    if (depIssue) return c.json({ ok: false, error: depIssue.error, hint: depIssue.hint }, 400);
+    if (handleDepIssue(c, depIssue)) return;
 
     // 始终更新本地缓存（保证 UI 视觉一致）
-    function updateLocalRead() {
+    function updateLocalRead(readState) {
       try {
         const cacheFile = path.join(cacheDir, `messages-${accountId}-${folder}.json`);
         const msgs = readJson(cacheFile, null);
         if (Array.isArray(msgs)) {
           const target = msgs.find(m => m.id === messageId);
-          if (target) { target.read = true; writeJson(cacheFile, msgs); }
+          if (target) { target.read = !!readState; writeJson(cacheFile, msgs); }
         }
       } catch {}
     }
 
     try {
+      // 标未读：部分后端不支持，直接本地标记
+      if (!wantRead) {
+        updateLocalRead(false);
+        return c.json({ ok: true, data: { fallback: true, reason: "mark-unread-local" } });
+      }
       const result = await runInbox(["mark-read", account.email, messageId], inboxEnvFor(account));
       if (result && result.error) {
-        updateLocalRead();
+        updateLocalRead(true);
         return c.json({ ok: true, data: { fallback: true, reason: String(result.error).slice(0, 200) } });
       }
-      updateLocalRead();
+      updateLocalRead(true);
       return c.json({ ok: true, data: result });
     } catch (e) {
       try { fs.appendFileSync(path.join(dataDir, "debug-markread.log"), `[${new Date().toISOString()}] mark-read ${messageId} :: ${e.stack || e.message}\n`); } catch {}
-      // 上游失败（常见：mail-cli 未安装），仍保证本地标记生效
-      updateLocalRead();
+      updateLocalRead(wantRead);
       return c.json({ ok: true, data: { fallback: true, reason: String(e.message || e).slice(0, 200) } });
     }
   };
@@ -588,7 +721,7 @@ export default function (app, ctx) {
     const account = resolveAccount(accounts(), accountId);
     if (!account) return c.json({ ok: false, error: "account not found" });
     const depIssue = checkBackendDeps(account);
-    if (depIssue) return c.json({ ok: false, error: depIssue.error, hint: depIssue.hint }, 400);
+    if (handleDepIssue(c, depIssue)) return;
     try {
       const result = await runInbox(["search", account.email, q], inboxEnvFor(account));
       if (result && result.error) return c.json({ ok: false, error: result.error });
@@ -613,7 +746,7 @@ export default function (app, ctx) {
     const account = resolveAccount(accounts(), accountId);
     if (!account) return c.json({ ok: false, error: "account not found" }, 404);
     const depIssue = checkBackendDeps(account);
-    if (depIssue) return c.json({ ok: false, error: depIssue.error, hint: depIssue.hint }, 400);
+    if (handleDepIssue(c, depIssue)) return;
     try {
       const r = await runInbox(["attachment", account.email, messageId, partId], inboxEnvFor(account));
       if (r && r.error) return c.json({ ok: false, error: String(r.error) }, 400);
@@ -638,6 +771,198 @@ export default function (app, ctx) {
     }
   };
 
+  // ── LLM 配置检测与测试 ──
+  // 检测 Hanako 本体 / 环境变量中的 LLM 配置
+  // 把 YAML 解析出的各种类型归一化为字符串（对象/布尔/数字 → 字符串或空）
+  function asStr(v) {
+    if (v === null || v === undefined) return "";
+    if (typeof v === "string") return v;
+    if (typeof v === "boolean" || typeof v === "number") return String(v);
+    return ""; // 对象（如空 map {}）→ 视为未设置
+  }
+
+  // ── 轻量 YAML 解析（处理嵌套 map + 标量值；忽略 list 细节，仅取我们需要的字段）──
+  function parseSimpleYaml(text) {
+    const lines = String(text || "").split(/\r?\n/);
+    const root = {};
+    const stack = [{ indent: -1, node: root }];
+    const top = () => stack[stack.length - 1];
+
+    for (const raw of lines) {
+      if (!raw.trim() || raw.trimStart().startsWith("#")) continue;
+      const indent = raw.match(/^(\s*)/)[1].replace(/\t/g, "  ").length;
+      let content = raw.trim().replace(/\s+#.*$/, ""); // 去掉行尾注释
+      if (/^-\s/.test(content)) continue; // 列表项跳过（我们只需要标量路径）
+
+      const m = content.match(/^([^:]+):\s*(.*)$/);
+      if (!m) continue;
+      const key = m[1].trim();
+      let value = m[2].trim();
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+      }
+
+      while (stack.length > 1 && top().indent >= indent) stack.pop();
+
+      if (value === "") {
+        const newNode = {};
+        top().node[key] = newNode;
+        stack.push({ indent, node: newNode });
+      } else {
+        if (value.startsWith("[") && value.endsWith("]")) {
+          value = value.slice(1, -1).split(",").map((s) => s.trim()).filter(Boolean);
+        } else if (value === "true") value = true;
+        else if (value === "false") value = false;
+        else if (value !== "" && !isNaN(Number(value))) value = Number(value);
+        top().node[key] = value;
+      }
+    }
+    return root;
+  }
+
+  // 常见供应商 → OpenAI 兼容 Base URL 预设（best-effort，用户可在 UI 覆盖）
+  const PROVIDER_PRESETS = {
+    openai: "https://api.openai.com/v1",
+    deepseek: "https://api.deepseek.com/v1",
+    anthropic: "https://api.anthropic.com/v1",
+    moonshot: "https://api.moonshot.cn/v1",
+    kimi: "https://api.moonshot.cn/v1",
+    qwen: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    aliyun: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    dashscope: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    zhipu: "https://open.bigmodel.cn/api/paas/v4",
+    glm: "https://open.bigmodel.cn/api/paas/v4",
+    ollama: "http://localhost:11434/v1",
+    grok: "https://api.x.ai/v1",
+    xai: "https://api.x.ai/v1",
+    gemini: "https://generativelanguage.googleapis.com/v1beta/openai",
+    google: "https://generativelanguage.googleapis.com/v1beta/openai",
+    together: "https://api.together.xyz/v1",
+    siliconflow: "https://api.siliconflow.cn/v1",
+    volcengine: "https://ark.cn-beijing.volces.com/api/v3",
+    baichuan: "https://api.baichuan-ai.com/v1",
+    minimax: "https://api.minimax.chat/v1",
+  };
+
+  // 检测 Hanako per-agent LLM 配置（两层结构）
+  //   1) 每个 agent: ~/.hanako/agents/<agent-id>/config.yaml  (api.provider / models.chat ...)
+  //   2) 全局供应商凭据: ~/.hanako/added-models.yaml  (跨 agent 共享，通常已迁移到设置页)
+  const postLlmDetect = async (c) => {
+    const detected = [];
+    const home = os.homedir();
+
+    // 1) 每个 agent 的独立配置
+    const agentsDir = path.join(home, ".hanako", "agents");
+    try {
+      if (fs.existsSync(agentsDir)) {
+        const agentIds = fs.readdirSync(agentsDir).filter((name) => {
+          try { return fs.statSync(path.join(agentsDir, name)).isDirectory(); } catch { return false; }
+        });
+        for (const agentId of agentIds) {
+          const cfgPath = path.join(agentsDir, agentId, "config.yaml");
+          if (!fs.existsSync(cfgPath)) continue;
+          try {
+            const cfg = parseSimpleYaml(fs.readFileSync(cfgPath, "utf-8"));
+            // 真实结构：api.provider 可能是字符串或空对象 {}；models.chat 是 { id, provider }
+            const apiProvider = asStr(cfg?.api?.provider || cfg?.provider || cfg?.llm?.provider).toLowerCase();
+            const chatObj = cfg?.models?.chat;
+            const chatModel = (chatObj && typeof chatObj === "object")
+              ? asStr(chatObj.id)
+              : (typeof chatObj === "string" ? chatObj : "");
+            const chatProvider = (chatObj && typeof chatObj === "object") ? asStr(chatObj.provider) : "";
+            const utilityModel = (typeof cfg?.models?.utility === "string")
+              ? cfg.models.utility
+              : asStr(cfg?.models?.utility?.id);
+            const embeddingModel = (typeof cfg?.models?.embedding === "string")
+              ? cfg.models.embedding
+              : asStr(cfg?.models?.embedding?.id);
+            if (!apiProvider && !chatModel) continue; // 该 agent 未配置 LLM，跳过
+            // 模型实际由 models.chat.provider 提供；拿不到时用 api.provider 兜底
+            const modelProvider = (chatProvider || apiProvider).toLowerCase();
+            const cfgBaseUrl = cfg?.api?.base_url || cfg?.api?.endpoint || "";
+            const baseUrl = cfgBaseUrl || PROVIDER_PRESETS[modelProvider] || "";
+            const displayProvider = chatProvider || apiProvider;
+            detected.push({
+              name: `Agent: ${agentId}` + (chatModel ? ` · ${chatModel}` : ""),
+              provider: displayProvider,
+              apiProvider,
+              chatProvider,
+              baseUrl,
+              apiKey: "", // 凭据在 added-models.yaml / 设置页管理，检测不返回明文
+              model: chatModel || "",
+              agentId,
+              utilityModel,
+              embeddingModel,
+              note: `来源: ${cfgPath}`,
+              needsKey: true,
+              needsBaseUrl: !baseUrl,
+            });
+          } catch {}
+        }
+      }
+    } catch {}
+
+    // 2) 全局供应商凭据（added-models.yaml，通常已迁移到设置页）
+    let addedModelsKeys = [];
+    const addedModelsPath = path.join(home, ".hanako", "added-models.yaml");
+    try {
+      if (fs.existsSync(addedModelsPath)) {
+        const am = parseSimpleYaml(fs.readFileSync(addedModelsPath, "utf-8"));
+        addedModelsKeys = Object.keys(am || {}).filter((k) => k !== "_migrated");
+      }
+    } catch {}
+
+    // 3) 环境变量兜底（HANAKO_LLM_* / OPENAI_* / OLLAMA_*）
+    const envChecks = [
+      { name: "环境变量 HANAKO_LLM", provider: (process.env.HANAKO_LLM_BASE_URL || "").includes("deepseek") ? "deepseek" : (process.env.HANAKO_LLM_BASE_URL || "").includes("openai") ? "openai" : "", baseUrl: process.env.HANAKO_LLM_BASE_URL, apiKey: process.env.HANAKO_LLM_API_KEY, model: process.env.HANAKO_LLM_MODEL },
+      { name: "OpenAI 兼容", provider: "openai", baseUrl: process.env.OPENAI_BASE_URL || process.env.OPENAI_API_BASE, apiKey: process.env.OPENAI_API_KEY, model: process.env.OPENAI_MODEL || "gpt-4o-mini" },
+      { name: "Ollama 本地", provider: "ollama", baseUrl: process.env.OLLAMA_HOST || "http://localhost:11434/v1", apiKey: "ollama", model: process.env.OLLAMA_MODEL || "qwen2.5:7b" },
+    ];
+    for (const env of envChecks) {
+      if (env.baseUrl && env.model) {
+        detected.push({
+          name: env.name + (env.provider ? ` · ${env.provider}` : ""),
+          provider: env.provider || "",
+          baseUrl: env.baseUrl,
+          apiKey: (env.apiKey || "").slice(0, 8) + "****", // 脱敏
+          model: env.model,
+          note: "来源: 环境变量",
+          needsKey: !env.apiKey,
+          needsBaseUrl: false,
+        });
+      }
+    }
+
+    // 去重：优先按 agentId（或 baseUrl+model）
+    const seen = new Set();
+    const deduped = detected.filter((d) => {
+      const key = d.agentId ? `agent:${d.agentId}:${d.model}` : `env:${d.baseUrl}:${d.model}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    return c.json({ ok: true, data: deduped, addedModelsKeys });
+  };
+
+  // 测试 LLM 连接（发一个简单请求验证可用性）
+  const postLlmTest = async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const { baseUrl, apiKey, model } = body;
+    if (!baseUrl || !model) return c.json({ ok: false, error: "baseUrl 和 model 必填" });
+
+    try {
+      // 用后端 llm.mjs 的 chatCompletion 发一条测试消息
+      const result = await llm.chatCompletion(
+        [{ role: "user", content: "Reply with exactly: OK" }],
+        { baseUrl, apiKey, model, maxTokens: 8 }
+      );
+      return c.json({ ok: true, data: result?.model || model });
+    } catch (e) {
+      return c.json({ ok: false, error: String(e.message || e).slice(0, 300) });
+    }
+  };
+
   app.get("/accounts", getAccounts);
   app.post("/accounts", postAccounts);
   app.get("/folders", getFolders);
@@ -645,10 +970,29 @@ export default function (app, ctx) {
   app.get("/messages/:messageId", getMessageById);
   app.post("/sync", postSync);
   app.post("/send", postSend);
+  app.post("/forward", postForward);
+  app.post("/summarize", postSummarize);
+  app.post("/translate", postTranslate);
   app.post("/mark-read", postMarkRead);
   app.get("/search", getSearch);
   app.get("/attachments/:messageId/:partId", getAttachment);
   app.get("/image-proxy", getImageProxy);
+
+  // ── 依赖安装状态查询（前端轮询用）──
+  app.get("/deps-status", (c) => {
+    const installing = fs.existsSync(INSTALL_LOCK);
+    const missing = [];
+    // 检查各后端核心依赖
+    const checks = [
+      ["@clawemail/node-sdk", path.join(BACKEND_DIR, "node_modules", "@clawemail", "node-sdk", "package.json")],
+      ["imap", path.join(BACKEND_DIR, "node_modules", "imap", "package.json")],
+      ["nodemailer", path.join(BACKEND_DIR, "node_modules", "nodemailer", "package.json")],
+    ];
+    for (const [name, p] of checks) {
+      if (!fs.existsSync(p)) missing.push(name);
+    }
+    return c.json({ ok: true, installing, missing, ready: missing.length === 0 && !installing });
+  });
 
   // ── 桌面通知 ──
   // 方法1：自定义 helper（捆绑 CJK 字体，obsidian 黑金风格）
@@ -715,6 +1059,8 @@ export default function (app, ctx) {
 
   app.post("/notify", postNotify);
   app.get("/clicks/latest", getClicksLatest);
+  app.post("/llm-detect", postLlmDetect);
+  app.post("/llm-test", postLlmTest);
 
   // ── 后台轮询新邮件 ──────────────────────────────────
   const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 分钟
