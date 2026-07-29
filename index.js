@@ -11,19 +11,26 @@ const WS_MONITOR_PATH = path.join(BACKEND_DIR, "ws-monitor.mjs");
 function checkDeps() {
   const missing = [];
 
-  // ClawEmail SDK
-  const sdkPath = path.join(BACKEND_DIR, "node_modules", "@clawemail", "node-sdk", "package.json");
-  if (!fs.existsSync(sdkPath)) missing.push("@clawemail/node-sdk");
+  // 直接从 backend/package.json 读取依赖清单，保证与声明完全一致
+  // （避免手写枚举漏掉部分依赖，导致 node_modules 部分残留时漏装）
+  let manifest;
+  try {
+    const pkgPath = path.join(BACKEND_DIR, "package.json");
+    manifest = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+  } catch {
+    // 读不到清单就不自动安装，避免误判
+    return [];
+  }
 
-  // mail-cli（用于 move/mark/folders 等）
-  const mailCliPath = path.join(BACKEND_DIR, "node_modules", "@clawemail", "mail-cli", "package.json");
-  if (!fs.existsSync(mailCliPath)) missing.push("@clawemail/mail-cli");
-
-  // IMAP 依赖
-  const imapPath = path.join(BACKEND_DIR, "node_modules", "imap", "package.json");
-  if (!fs.existsSync(imapPath)) missing.push("imap");
-  const nmPath = path.join(BACKEND_DIR, "node_modules", "nodemailer", "package.json");
-  if (!fs.existsSync(nmPath)) missing.push("nodemailer");
+  const deps = Object.keys(manifest.dependencies || {});
+  for (const dep of deps) {
+    // 作用域包 @scope/name -> node_modules/@scope/name/package.json
+    const rel = dep.startsWith("@")
+      ? path.join("node_modules", dep.split("/")[0], dep.split("/")[1])
+      : path.join("node_modules", dep);
+    const pkgJson = path.join(BACKEND_DIR, rel, "package.json");
+    if (!fs.existsSync(pkgJson)) missing.push(dep);
+  }
 
   return missing;
 }
