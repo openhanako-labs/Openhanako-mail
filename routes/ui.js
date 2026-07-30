@@ -6,6 +6,8 @@ import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 
 import * as llm from "../backend/llm.mjs";
+// 镜像 hana-code-atlas（代码图谱）：通过 ctx.bus 向 Hanako 宿主解析真实模型配置
+import { resolveLlmConfig, listChatModels } from "../backend/hana-llm.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -306,6 +308,22 @@ const getImageProxy = async (c) => {
     return c.json({ ok: false, error: String(e.message || e) }, 502);
   }
 };
+
+// 解析 LLM 调用选项：前端自定义优先，否则从 Hanako 宿主（provider:credentials）解析真实配置。
+// 这是对照 hana-code-atlas（代码图谱）修正的核心：此前读不到的 HANAKO_LLM_* 不再作为唯一来源。
+async function buildLlmOpts(ctx, llmCfg, body = {}) {
+  if (llmCfg && llmCfg.baseUrl && llmCfg.model) {
+    return { baseUrl: llmCfg.baseUrl, apiKey: llmCfg.apiKey, model: llmCfg.model };
+  }
+  try {
+    const cfg = await resolveLlmConfig(ctx, { providerId: body?.providerId, model: body?.model });
+    if (cfg.ok) return { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model, api: cfg.api };
+    ctx?.log?.warn?.("mail_llm.resolve_failed", { error: cfg.error });
+  } catch (e) {
+    ctx?.log?.warn?.("mail_llm.resolve_exception", { error: e?.message });
+  }
+  return {}; // 回退到 llm.mjs 内部的环境变量兜底
+}
 
 export default function (app, ctx) {
   const dataDir = path.join(ctx.dataDir, ctx.pluginId);
@@ -629,12 +647,8 @@ export default function (app, ctx) {
 
     try {
       const text = await readMailPlain(account, messageId);
-      // 构建选项：前端配置优先，否则走环境变量默认值
-      const opts = llmCfg ? {
-        baseUrl: llmCfg.baseUrl,
-        apiKey: llmCfg.apiKey,
-        model: llmCfg.model,
-      } : {};
+      // 配置来源：前端自定义 > 宿主真实配置（provider:credentials）> 环境变量兜底
+      const opts = await buildLlmOpts(ctx, llmCfg, body);
       const summary = await llm.summarizeMail(text, targetLang, opts);
       return c.json({ ok: true, data: summary });
     } catch (e) {
@@ -657,11 +671,7 @@ export default function (app, ctx) {
 
     try {
       const text = await readMailPlain(account, messageId);
-      const opts = llmCfg ? {
-        baseUrl: llmCfg.baseUrl,
-        apiKey: llmCfg.apiKey,
-        model: llmCfg.model,
-      } : {};
+      const opts = await buildLlmOpts(ctx, llmCfg, body);
       const translated = await llm.translateMail(text, targetLang, opts);
       return c.json({ ok: true, data: translated });
     } catch (e) {
@@ -849,6 +859,30 @@ export default function (app, ctx) {
   //   2) 全局供应商凭据: ~/.hanako/added-models.yaml  (跨 agent 共享，通常已迁移到设置页)
   const postLlmDetect = async (c) => {
     const detected = [];
+
+    // 0) Hanako 宿主配置的聊天供应商（真实可用，凭据由宿主管理，无需前端填 key）
+    //    这是对照 hana-code-atlas（代码图谱）修正的核心来源。
+    try {
+      const host = await listChatModels(ctx);
+      if (host.ok) {
+        for (const p of host.providers) {
+          for (const m of p.models) {
+            detected.push({
+              name: `宿主: ${p.id} · ${m}`,
+              provider: p.id,
+              model: m,
+              baseUrl: "", // 凭据走 provider:credentials，不在此暴露明文
+              apiKey: "",
+              fromHost: true,
+              note: "来源: Hanako 宿主 (provider:models-by-type)",
+              needsKey: false,
+              needsBaseUrl: false,
+            });
+          }
+        }
+      }
+    } catch {}
+
     const home = os.homedir();
 
     // 1) 每个 agent 的独立配置
@@ -948,14 +982,19 @@ export default function (app, ctx) {
   // 测试 LLM 连接（发一个简单请求验证可用性）
   const postLlmTest = async (c) => {
     const body = await c.req.json().catch(() => ({}));
-    const { baseUrl, apiKey, model } = body;
-    if (!baseUrl || !model) return c.json({ ok: false, error: "baseUrl 和 model 必填" });
+    let { baseUrl, apiKey, model, api } = body;
+    // 未显式给配置时，从 Hanako 宿主解析真实可用的模型配置
+    if (!baseUrl || !model) {
+      const cfg = await resolveLlmConfig(ctx, { providerId: body?.providerId, model: body?.model });
+      if (!cfg.ok) return c.json({ ok: false, error: `无法从宿主解析 LLM 配置: ${cfg.error}` });
+      baseUrl = cfg.baseUrl; apiKey = cfg.apiKey; model = cfg.model; api = cfg.api;
+    }
 
     try {
       // 用后端 llm.mjs 的 chatCompletion 发一条测试消息
       const result = await llm.chatCompletion(
         [{ role: "user", content: "Reply with exactly: OK" }],
-        { baseUrl, apiKey, model, maxTokens: 8 }
+        { baseUrl, apiKey, model, api, maxTokens: 8 }
       );
       return c.json({ ok: true, data: result?.model || model });
     } catch (e) {
