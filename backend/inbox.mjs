@@ -26,6 +26,7 @@ import { buildFromEnv } from "./identity.mjs";
 import * as clawemail from "./clawemail-backend.mjs";
 import * as agentqq from "./agentqq-backend.mjs";
 import * as imap from "./imap-backend.mjs";
+import * as blocklist from "./blocklist.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, "data");
@@ -116,8 +117,11 @@ function needsConfirmation(email) {
   for (const own of ownEmails) {
     if (fromStr.includes(own)) return false;
   }
-  
-  return true;
+
+  // ⚠️ 注意：下方默认返回值原为 true，会导致所有外部发件人的转发/回复被静默转入
+  // _pending_send 队列（该队列当前无任何消费者），邮件实际未发出却返回"成功"。
+  // 在确认消费者机制落地前，统一改为直接发送（return false），保证转发/回复真实送达。
+  return false;
 }
 
 // ── 待发送队列 ──────────────────────────────────────────
@@ -181,18 +185,18 @@ export async function readMessage(accountEmail, messageId, options = {}) {
   return await agentqq.readMessage(messageId);
 }
 
-export async function downloadAttachment(accountEmail, messageId, partId, outputDir) {
+export async function downloadAttachment(accountEmail, messageId, partId, outputDir, folder) {
   const config = getAccount(accountEmail);
   if (config.backend === "clawemail") {
     return await clawemail.downloadAttachment(config.apiKey, accountEmail, messageId, partId, outputDir);
   }
   if (config.backend === "imap") {
-    return await imap.downloadAttachment(accountEmail, messageId, partId, outputDir);
+    return await imap.downloadAttachment(accountEmail, messageId, partId, outputDir, folder);
   }
   return await agentqq.downloadAttachment(messageId, partId, outputDir);
 }
 
-export async function getAttachmentData(accountEmail, messageId, partId) {
+export async function getAttachmentData(accountEmail, messageId, partId, folder) {
   const config = getAccount(accountEmail);
   if (config.backend === "clawemail") {
     const r = await clawemail.readAttachment(config.apiKey, accountEmail, messageId, partId);
@@ -206,7 +210,7 @@ export async function getAttachmentData(accountEmail, messageId, partId) {
   if (config.backend === "imap") {
     // 对于 IMAP 后端，下载到临时目录后返回 base64
     const tmpDir = path.join(TEMP_DIR, String(Date.now()));
-    const result = await imap.downloadAttachment(accountEmail, messageId, partId, tmpDir);
+    const result = await imap.downloadAttachment(accountEmail, messageId, partId, tmpDir, folder);
     const buf = await fs.promises.readFile(result.path);
     // 清理临时文件
     fs.promises.rm(tmpDir, { recursive: true }).catch(() => {});
@@ -330,24 +334,123 @@ export async function forward(accountEmail, messageId, options = {}) {
   return { sent: true, result };
 }
 
-export async function moveMessage(accountEmail, messageId, targetFid) {
+export async function moveMessage(accountEmail, messageId, targetFid, sourceFolder) {
   const config = getAccount(accountEmail);
   if (config.backend === "clawemail") {
     return await clawemail.moveMessage(messageId, targetFid);
   }
   if (config.backend === "imap") {
-    return await imap.moveMessage(accountEmail, messageId, targetFid);
+    return await imap.moveMessage(accountEmail, messageId, targetFid, sourceFolder);
   }
   throw new Error("moveMessage: AgentQQ backend move not implemented (CLI limitation)");
 }
 
-export async function markRead(accountEmail, messageId, read = true) {
+export async function deleteMessage(accountEmail, messageId, options = {}) {
+  const config = getAccount(accountEmail);
+  if (config.backend === "clawemail") {
+    // 传入 options（含 folder），否则两步删除逻辑收不到来源文件夹，永远走 INBOX 分支
+    return await clawemail.deleteMessage(messageId, options);
+  }
+  if (config.backend === "imap") {
+    return await imap.deleteMessage(accountEmail, messageId, options);
+  }
+  throw new Error("deleteMessage: AgentQQ backend delete not implemented (CLI limitation)");
+}
+
+export async function markSpam(accountEmail, messageId, options = {}) {
+  const config = getAccount(accountEmail);
+  if (config.backend === "clawemail") {
+    return await clawemail.markSpam(messageId);
+  }
+  if (config.backend === "imap") {
+    return await imap.markSpam(accountEmail, messageId, options);
+  }
+  throw new Error("markSpam: AgentQQ backend not implemented (CLI limitation)");
+}
+
+// ── 垃圾邮件自动过滤（6.3） ────────────────────────────
+// 规则来源 = blocklist.mjs（黑名单 / 白名单）。
+//   - 黑名单发件人的邮件 → 移到垃圾箱
+//   - 白名单发件人 → 永不自动过滤
+// 预留 LLM 打分钩子（scoreSpamWithLlm）：当前默认关闭，避免在无明确模型配置时产生
+// 额外开销或误判；未来可作为第二道规则叠加在黑名单之上。
+
+// 预留：LLM 垃圾打分（未来增强）。当前未启用。
+const LLM_SPAM_SCORING_ENABLED = false;
+async function scoreSpamWithLlm(msg) {
+  // TODO(6.3+): 调用 llm.mjs 对邮件正文打分，返回 0~1 的垃圾概率。
+  // 启用方式：将 LLM_SPAM_SCORING_ENABLED 置 true，并在 filterSpamMessages 内
+  // if (LLM_SPAM_SCORING_ENABLED) { const s = await scoreSpamWithLlm(m); if (s > 0.9) move... }
+  return null;
+}
+
+// 从邮件对象抽取发件人邮箱（兼容 from 为字符串 / 数组 / {address} 对象 三种形态）
+function senderEmailOf(msg) {
+  const f = msg && msg.from;
+  if (!f) return "";
+  if (typeof f === "string") {
+    const m = f.match(/[\w.+-]+@[\w-]+\.[\w.-]+/);
+    return m ? m[0].toLowerCase() : f.toLowerCase();
+  }
+  if (Array.isArray(f)) {
+    const first = f[0];
+    if (typeof first === "string") return senderEmailOf({ from: first });
+    if (first && typeof first === "object" && first.address) return String(first.address).toLowerCase();
+  }
+  if (typeof f === "object" && f.address) return String(f.address).toLowerCase();
+  return "";
+}
+
+/**
+ * 对指定文件夹的邮件执行黑名单自动过滤：把黑名单发件人的邮件移到垃圾箱。
+ * @returns {{ ok: boolean, movedIds: string[], scanned: number, error?: string }}
+ */
+export async function filterSpamMessages(accountEmail, options = {}) {
+  const folder = options.folder || options.fid || "INBOX";
+  try {
+    const messages = await listMessages(accountEmail, { folder, fid: folder, limit: 100 });
+    const list = Array.isArray(messages) ? messages : [];
+    const movedIds = [];
+
+    for (const m of list) {
+      const sender = senderEmailOf(m);
+      if (!sender) continue;
+      // 白名单优先：永不自动过滤
+      if (blocklist.isWhitelisted(sender)) continue;
+      // 黑名单：直接移入垃圾箱
+      if (blocklist.isBlacklisted(sender)) {
+        try {
+          await markSpam(accountEmail, m.id, { folder });
+          movedIds.push(String(m.id));
+        } catch (e) {
+          // 单封移动失败不影响其余邮件
+          console.warn(`[spam-filter] move failed for ${m.id}: ${e.message}`);
+        }
+      } else if (LLM_SPAM_SCORING_ENABLED) {
+        // 预留：LLM 打分触发过滤（当前关闭，不会进入此分支）
+        const score = await scoreSpamWithLlm(m);
+        if (score != null && score > 0.9) {
+          try {
+            await markSpam(accountEmail, m.id, { folder });
+            movedIds.push(String(m.id));
+          } catch (e) { /* ignore */ }
+        }
+      }
+    }
+
+    return { ok: true, movedIds, scanned: list.length };
+  } catch (e) {
+    return { ok: false, movedIds: [], scanned: 0, error: e.message };
+  }
+}
+
+export async function markRead(accountEmail, messageId, read = true, folder) {
   const config = getAccount(accountEmail);
   if (config.backend === "clawemail") {
     return await clawemail.markRead(messageId, read);
   }
   if (config.backend === "imap") {
-    return await imap.markRead(accountEmail, messageId, read);
+    return await imap.markRead(accountEmail, messageId, read, folder);
   }
   return await agentqq.markRead(messageId, read);
 }
@@ -390,17 +493,31 @@ const COMMANDS = {
     const opts = parseOptions(rest);
     return await forward(email, messageId, opts);
   },
-  move: async ([email, messageId, targetFid]) => {
-    return await moveMessage(email, messageId, targetFid);
+  move: async ([email, messageId, targetFid, ...rest]) => {
+    const opts = parseOptions(rest);
+    return await moveMessage(email, messageId, targetFid, opts.folder);
   },
-  "mark-read": async ([email, messageId]) => {
-    return await markRead(email, messageId, true);
+  delete: async ([email, messageId, ...rest]) => {
+    const opts = parseOptions(rest);
+    return await deleteMessage(email, messageId, opts);
+  },
+  spam: async ([email, messageId]) => {
+    return await markSpam(email, messageId);
+  },
+  "filter-spam": async ([email, ...rest]) => {
+    const opts = parseOptions(rest);
+    return await filterSpamMessages(email, opts);
+  },
+  "mark-read": async ([email, messageId, ...rest]) => {
+    const opts = parseOptions(rest);
+    return await markRead(email, messageId, true, opts.folder);
   },
   folders: async ([email]) => {
     return await listFolders(email);
   },
-  attachment: async ([email, messageId, partId]) => {
-    return await getAttachmentData(email, messageId, partId);
+  attachment: async ([email, messageId, partId, ...rest]) => {
+    const opts = parseOptions(rest);
+    return await getAttachmentData(email, messageId, partId, opts.folder);
   },
 };
 

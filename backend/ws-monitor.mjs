@@ -5,13 +5,15 @@
  * - 为每个 ClawEmail 账号建立 WebSocket 连接
  * - 收到新邮件后写入 plugin-data 缓存
  * - 可选：根据 identity 规则自动回复
- * - 通过 /api/plugins/hanako-mail/notify 触发桌面通知
+ * - 收到新邮件后直接调用 helper/mail-toast.cjs 弹系统级桌面通知
  */
 
 import { MailClient } from "@clawemail/node-sdk";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
+import { execFile } from "node:child_process";
 import { buildFromEnv } from "./identity.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -67,13 +69,26 @@ function saveProcessed(accountId, set) {
 
 function notifyDesktop(subject, sender, messageId, accountId) {
   try {
-    const notifyDir = path.join(getDataDir(), "_pending_notify");
-    ensureDir(notifyDir);
+    const toastScript = path.join(__dirname, "..", "helper", "mail-toast.cjs");
+    if (!fs.existsSync(toastScript)) {
+      log("WARN", "mail-toast.cjs 不存在，跳过桌面通知", { toastScript });
+      return;
+    }
+    // 直接调用原生桌面通知（与 routes/ui.js 的 postNotify 同一条链路），
+    // 不再写 _pending_notify 黑洞目录（原先无人消费，实时通知等于失效）。
     const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    const file = path.join(notifyDir, `${id}.json`);
-    fs.writeFileSync(file, JSON.stringify({ subject, sender, messageId, accountId, createdAt: new Date().toISOString() }), "utf-8");
+    const argsFile = path.join(getDataDir(), `notify-args-${id}.json`);
+    fs.writeFileSync(argsFile, JSON.stringify({ subject, sender, messageId, accountId }), "utf-8");
+    execFile(process.execPath, [toastScript, "--args-file", argsFile], {
+      cwd: path.join(__dirname, ".."),
+      windowsHide: true,
+      env: { ...process.env, NODE_PATH: path.join(os.homedir(), ".workbuddy", "binaries", "node", "workspace", "node_modules") },
+    }, (err) => {
+      try { fs.unlinkSync(argsFile); } catch {}
+      if (err) log("WARN", "桌面通知失败", { err: err.message });
+    });
   } catch (e) {
-    log("WARN", "notify failed", { err: e.message });
+    log("WARN", "桌面通知失败", { err: e.message });
   }
 }
 

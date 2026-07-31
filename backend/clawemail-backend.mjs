@@ -261,6 +261,31 @@ export async function markRead(messageId, read = true) {
   return runMailCli(["mark", `--ids=${messageId}`, read ? "--read" : "--unread"]);
 }
 
+export async function deleteMessage(messageId, options = {}) {
+  const folder = options.folder || "INBOX";
+  const folders = await listFolders();
+  const all = Array.isArray(folders) ? folders : [];
+  const cur = all.find((f) => f.id === folder || f.name === folder);
+  const isTrash = !!(cur && (cur.type === "trash" || /trash|deleted|垃圾箱|废纸|已删除/.test(String(cur.name || "").toLowerCase())));
+  if (!isTrash) {
+    const trash = all.find((f) => f.type === "trash")
+      || all.find((f) => /trash|deleted|垃圾箱|废纸|已删除/.test(String(f.name || f.id || "").toLowerCase()));
+    if (trash) {
+      return { movedToTrash: true, targetFid: trash.id, ...(await runMailCli(["move", `--ids=${messageId}`, `--fid=${trash.id}`])) };
+    }
+  }
+  return runMailCli(["delete", `--ids=${messageId}`]);
+}
+
+export async function markSpam(messageId) {
+  // ClawEmail 用 mail-cli 移动；先列出文件夹定位垃圾箱 fid
+  const folders = await listFolders();
+  const spam = (Array.isArray(folders) ? folders : []).find(f => f.type === "spam")
+    || (Array.isArray(folders) ? folders : []).find(f => /spam|junk|垃圾/.test(String(f.name || f.id || "").toLowerCase()));
+  if (!spam) throw new Error("未找到垃圾邮件文件夹");
+  return runMailCli(["move", `--ids=${messageId}`, `--fid=${spam.id}`]);
+}
+
 // ── 实时监听（用 SDK） ─────────────────────────────────
 
 export async function watch(apiKey, user, onMessage) {

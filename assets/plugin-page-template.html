@@ -436,6 +436,13 @@ body[data-hana-theme="dark"] .account-fields { border-left-color: var(--gold); }
 .llm-form .llm-row input, .llm-form .llm-row select { padding: 6px 10px; border: 1px solid var(--border); border-radius: 5px; background: var(--input-bg); color: var(--ink); font-size: 12px; }
 .llm-form .llm-row input:focus, .llm-form .llm-row select:focus { outline: 3px solid rgba(176,141,87,.25); border-color: var(--gold); }
 .llm-note { margin-top: 10px; font-size: 11px; color: var(--text-muted); line-height: 1.5; max-width: 460px; word-break: break-all; }
+
+/* ── 黑名单 / 白名单列表（6.4） ── */
+.bl-list { display: flex; flex-direction: column; gap: 6px; max-height: 200px; overflow: auto; margin-top: 4px; }
+.bl-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; background: var(--hover-row); border: 1px solid var(--border); border-radius: 8px; padding: 5px 9px; font-size: 12px; }
+.bl-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bl-x { border: none; background: transparent; color: var(--danger, #e5484d); font-size: 16px; line-height: 1; cursor: pointer; padding: 0 4px; }
+.bl-empty { font-size: 12px; color: var(--text-muted); padding: 4px 2px; }
 .llm-note .warn { color: #c0392b; font-weight: 700; }
 .llm-preset {
   display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px;
@@ -572,6 +579,7 @@ setTimeout(function(){try{window.parent.postMessage({source:'hana-plugin',type:'
             <span class="batch-info" id="batchInfo"></span>
             <button class="btn small" id="batchMarkRead"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> 标已读</button>
             <button class="btn small" id="batchMarkUnread"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.83 2.83 0 114 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg> 标未读</button>
+            <button class="btn small" id="batchSpam"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="4 15 4 4 16 2 16 13"/><line x1="4" y1="22" x2="4" y2="15"/><line x1="16" y1="13" x2="16" y2="22"/></svg> 垃圾</button>
             <button class="btn small danger" id="batchDelete"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg> 删除</button>
             <button class="btn small" id="batchCancel" style="margin-left:auto">取消选择</button>
           </div>
@@ -654,6 +662,33 @@ setTimeout(function(){try{window.parent.postMessage({source:'hana-plugin',type:'
               </div>
             </form>
             <div class="llm-note" id="llmActiveNote"></div>
+          </div>
+
+          <div class="llm-settings" style="margin-top:16px">
+            <div class="llm-settings-head">
+              <span>垃圾邮件拦截 · 黑名单 / 白名单</span>
+            </div>
+            <div class="llm-note">黑名单发件人的邮件在同步时会自动移入「垃圾邮件」文件夹；白名单发件人永不自动过滤。手动「标记为垃圾」也会把发件人写入黑名单。</div>
+            <div class="llm-form">
+              <div class="llm-row">
+                <label>发件人邮箱</label>
+                <input type="email" id="blEmail" placeholder="例如 spam@example.com">
+              </div>
+              <div class="llm-row" style="flex-direction:row;gap:8px;align-items:center;flex-wrap:wrap">
+                <button class="btn small primary" id="blAddBlack">加入黑名单</button>
+                <button class="btn small" id="blAddWhite">加入白名单</button>
+              </div>
+            </div>
+            <div style="display:flex;gap:18px;margin-top:12px;flex-wrap:wrap">
+              <div style="flex:1;min-width:220px">
+                <div style="font-size:12px;font-weight:700;margin-bottom:4px">黑名单</div>
+                <div id="blBlackList" class="bl-list"></div>
+              </div>
+              <div style="flex:1;min-width:220px">
+                <div style="font-size:12px;font-weight:700;margin-bottom:4px">白名单</div>
+                <div id="blWhiteList" class="bl-list"></div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1160,7 +1195,7 @@ function openDetail(messageId) {
   var box = document.getElementById('detailBox');
   box.innerHTML = '<div class="loading">加载邮件…</div>';
   navigateTo('detail');
-  api('/messages/' + encodeURIComponent(messageId) + '?accountId=' + encodeURIComponent(state.accountId)).then(function (r) { return r.json(); }).then(function (d) {
+  api('/messages/' + encodeURIComponent(messageId) + '?accountId=' + encodeURIComponent(state.accountId) + '&folder=' + encodeURIComponent(state.folderId || 'INBOX')).then(function (r) { return r.json(); }).then(function (d) {
     if (!d.ok) { box.innerHTML = '<div class="empty">加载失败：' + esc(d.error || '未知错误') + '</div>'; return; }
     var m = d.data;
     if (!m) { box.innerHTML = '<div class="empty">邮件不存在</div>'; return; }
@@ -1176,6 +1211,7 @@ function openDetail(messageId) {
       '<button class="btn primary small" data-reply="' + esc(m.id) + '">回复</button>' +
       '<button class="btn small" data-forward="' + esc(m.id) + '">转发</button>' +
       '<button class="btn small" data-toggle-read="' + esc(m.id) + '" data-is-read="' + (m.read ? '1' : '0') + '">' + (m.read ? svgIcon('check') + ' 已读' : svgIcon('edit') + ' 未读') + '</button>' +
+      '<button class="btn small" data-spam="' + esc(m.id) + '">标记垃圾</button>' +
       '<button class="btn small" data-summarize="' + esc(m.id) + '">' + svgIcon('sparkles') + ' 总结</button>' +
       '<button class="btn small" data-translate="' + esc(m.id) + '">' + svgIcon('language') + ' 翻译</button>' +
       '<button class="btn small" onclick="navigateTo(\'list\')">返回</button>' +
@@ -1512,26 +1548,104 @@ document.getElementById('batchMarkUnread').addEventListener('click', function ()
     markReadStatus(id, false).then(function (d) { done++; if (done === ids.length) { toast('已标记 ' + ids.length + ' 封为未读'); _selectedIds.clear(); updateCardSelection(); updateBatchUI(); loadMessages(state.accountId, state.folderId); loadFolders(state.accountId); } });
   });
 });
+document.getElementById('batchSpam').addEventListener('click', function () {
+  if (!_selectedIds.size || !state.accountId) return;
+  var ids = Array.from(_selectedIds);
+  var done = 0, failed = 0;
+  ids.forEach(function (id) {
+    api('/mark-spam', { method: 'POST', body: JSON.stringify({ accountId: state.accountId, messageId: id, folder: state.folderId || 'INBOX' }) })
+      .then(function (r) { return r.json(); }).then(function (d) {
+        if (!d || !d.ok) throw new Error((d && d.error) || '标记失败');
+        done++;
+      }).catch(function (e) {
+        failed++;
+        console.warn('标记垃圾失败', id, e && e.message);
+      }).then(function () {
+        if (done + failed === ids.length) {
+          toast(failed === 0 ? ('已将 ' + done + ' 封标记为垃圾邮件') : ('标记完成：成功 ' + done + ' 封，失败 ' + failed + ' 封'));
+          _selectedIds.clear(); updateBatchUI();
+          loadMessages(state.accountId, state.folderId);
+          loadFolders(state.accountId);
+        }
+      });
+  });
+});
 document.getElementById('batchDelete').addEventListener('click', function () {
   if (!_selectedIds.size || !state.accountId) return;
   var count = _selectedIds.size;
   if (!confirm('确定要删除选中的 ' + count + ' 封邮件吗？')) return;
   var ids = Array.from(_selectedIds);
-  var done = 0;
+  var done = 0, failed = 0;
   ids.forEach(function (id) {
-    api('/messages/' + encodeURIComponent(id) + '?accountId=' + encodeURIComponent(state.accountId), { method: 'DELETE' }).then(function (r) { return r.json(); }).then(function (d) {
-      done++;
-      if (done === ids.length) {
-        toast('已删除 ' + count + ' 封邮件');
-        _selectedIds.clear(); updateBatchUI();
-        loadMessages(state.accountId, state.folderId);
-        loadFolders(state.accountId);
-      }
-    }).catch(function () { done++; });
+    api('/messages/' + encodeURIComponent(id) + '?accountId=' + encodeURIComponent(state.accountId) + '&folder=' + encodeURIComponent(state.folderId || 'INBOX'), { method: 'DELETE' })
+      .then(function (r) {
+        return r.json().then(function (d) { return { ok: r.ok && d.ok !== false, d: d }; })
+          .catch(function () { return { ok: false, d: { error: '响应解析失败 (HTTP ' + r.status + ')' } }; });
+      })
+      .then(function (res) {
+        if (!res.ok) throw new Error((res.d && res.d.error) || '删除失败');
+        done++;
+      })
+      .catch(function (e) {
+        failed++;
+        console.warn('删除失败', id, e && e.message);
+      })
+      .then(function () {
+        if (done + failed === ids.length) {
+          toast(failed === 0 ? ('已删除 ' + done + ' 封邮件') : ('已删除 ' + done + ' 封，失败 ' + failed + ' 封'));
+          _selectedIds.clear(); updateBatchUI();
+          loadMessages(state.accountId, state.folderId);
+          loadFolders(state.accountId);
+        }
+      });
   });
 });
 
-/* ── 全局点击委托 ── */
+/* ── 黑名单 / 白名单管理（6.4） ── */
+function loadBlocklist() {
+  api('/blocklist').then(function (r) { return r.json(); }).then(function (d) {
+    if (!d || !d.ok) return;
+    renderBlocklist(d.data || { blacklist: [], whitelist: [] });
+  }).catch(function () {});
+}
+function renderBlocklist(data) {
+  var b = document.getElementById('blBlackList');
+  var w = document.getElementById('blWhiteList');
+  if (!b || !w) return;
+  b.innerHTML = (data.blacklist || []).map(function (e) {
+    return '<div class="bl-item"><span>' + esc(e) + '</span><button class="bl-x" data-rm="black" data-email="' + esc(e) + '">×</button></div>';
+  }).join('') || '<div class="bl-empty">（空）</div>';
+  w.innerHTML = (data.whitelist || []).map(function (e) {
+    return '<div class="bl-item"><span>' + esc(e) + '</span><button class="bl-x" data-rm="white" data-email="' + esc(e) + '">×</button></div>';
+  }).join('') || '<div class="bl-empty">（空）</div>';
+}
+function blUpdate(type, action, email) {
+  api('/blocklist', { method: 'POST', body: JSON.stringify({ type: type, action: action, email: email }) })
+    .then(function (r) { return r.json(); }).then(function (d) {
+      if (d && d.ok) { loadBlocklist(); toast(action === 'add' ? '已更新名单' : '已移除'); }
+      else toast('操作失败：' + ((d && d.error) || '未知错误'));
+    }).catch(function () { toast('操作失败'); });
+}
+document.getElementById('blAddBlack').addEventListener('click', function () {
+  var v = (document.getElementById('blEmail').value || '').trim();
+  if (!v) return;
+  blUpdate('black', 'add', v);
+});
+document.getElementById('blAddWhite').addEventListener('click', function () {
+  var v = (document.getElementById('blEmail').value || '').trim();
+  if (!v) return;
+  blUpdate('white', 'add', v);
+});
+document.getElementById('blBlackList').addEventListener('click', function (e) {
+  var x = e.target.closest('[data-rm]');
+  if (x) blUpdate(x.getAttribute('data-rm'), 'remove', x.getAttribute('data-email'));
+});
+document.getElementById('blWhiteList').addEventListener('click', function (e) {
+  var x = e.target.closest('[data-rm]');
+  if (x) blUpdate(x.getAttribute('data-rm'), 'remove', x.getAttribute('data-email'));
+});
+loadBlocklist();
+
 document.addEventListener('click', function (e) {
   var delAcct = e.target.closest('[data-del-acct]');
   if (delAcct) {
@@ -1578,6 +1692,17 @@ document.addEventListener('click', function (e) {
       }
       else { toast('标记失败：' + (d && d.error || '未知错误')); }
     });
+    return;
+  }
+
+  var spam = e.target.closest('[data-spam]');
+  if (spam) {
+    var spid = spam.getAttribute('data-spam');
+    api('/mark-spam', { method: 'POST', body: JSON.stringify({ accountId: state.accountId, messageId: spid, folder: state.folderId || 'INBOX' }) })
+      .then(function (r) { return r.json(); }).then(function (d) {
+        if (d && d.ok) { toast('已标记为垃圾邮件'); navigateTo('list'); loadMessages(state.accountId, state.folderId); loadFolders(state.accountId); }
+        else toast('标记失败：' + (d && d.error || '未知错误'));
+      }).catch(function () { toast('标记失败'); });
     return;
   }
 

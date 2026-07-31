@@ -109,15 +109,20 @@ function killWsTree(proc) {
   }
 }
 
-function startWsMonitor() {
+function startWsMonitor(pluginDataDir) {
   if (wsMonitorShutdown) return; // 已卸载，不再拉起
   if (wsMonitorProc) return; // 已在运行
   try {
+    const env = { ...process.env };
+    // 传入与 routes/tools 一致的 plugin-data 目录，否则 ws-monitor 读不到 accounts.json、
+    // 实时监听账号为空 → 实时收件/通知整体失效（审计发现的结构性错位，F3）
+    if (pluginDataDir) env.HANAKO_PLUGIN_DATA = pluginDataDir;
     const proc = spawn(process.execPath, [WS_MONITOR_PATH], {
       cwd: BACKEND_DIR,
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
       shell: true,
+      env,
     });
     wsMonitorProc = proc;
     writeWsPid(proc.pid);
@@ -157,9 +162,10 @@ export default class HanakoMailPlugin {
       autoInstallDeps();
     }
 
-    // 启动 WebSocket 实时收件监听
+    // 启动 WebSocket 实时收件监听（传入 plugin-data 目录，确保与 routes/tools 共用同一账号缓存）
     wsMonitorShutdown = false;
-    startWsMonitor();
+    const pluginDataDir = (ctx.dataDir && ctx.pluginId) ? path.join(ctx.dataDir, ctx.pluginId) : "";
+    startWsMonitor(pluginDataDir);
   }
 
   async onunload() {

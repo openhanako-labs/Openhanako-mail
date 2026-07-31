@@ -1,9 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { normalizeFolder, defaultFolders, inboxEnvFor } from "../backend/common.mjs";
 
-const BACKEND_DIR = path.join(path.dirname(path.dirname(import.meta.url)), "backend");
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const BACKEND_DIR = path.join(__dirname, "..", "backend");
 const INBOX_PATH = path.join(BACKEND_DIR, "inbox.mjs");
 
 async function runInbox(args, extraEnv = {}) {

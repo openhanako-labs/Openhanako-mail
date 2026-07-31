@@ -8,6 +8,7 @@ import crypto from "node:crypto";
 import * as llm from "../backend/llm.mjs";
 // 镜像 hana-code-atlas（代码图谱）：通过 ctx.bus 向 Hanako 宿主解析真实模型配置
 import { resolveLlmConfig, listChatModels } from "../backend/hana-llm.mjs";
+import * as blocklist from "../backend/blocklist.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -309,10 +310,29 @@ const getImageProxy = async (c) => {
   }
 };
 
+// 从 agent 的 config.yaml 解析真实 LLM 凭据（仅服务端使用，key 不返回前端）
+async function resolveAgentYamlLlm(agentId) {
+  if (!agentId) return null;
+  const cfgPath = path.join(os.homedir(), ".hanako", "agents", agentId, "config.yaml");
+  try {
+    if (!fs.existsSync(cfgPath)) return null;
+    const cfg = parseSimpleYaml(fs.readFileSync(cfgPath, "utf-8"));
+    const apiKey = asStr(cfg?.api?.api_key || cfg?.api_key || "").trim();
+    if (!apiKey) return null;
+    const baseUrl = asStr(cfg?.api?.base_url || cfg?.api?.endpoint || "");
+    const chatObj = cfg?.models?.chat;
+    const model = (chatObj && typeof chatObj === "object") ? asStr(chatObj.id) : (typeof chatObj === "string" ? chatObj : "");
+    return { apiKey, baseUrl, model };
+  } catch {
+    return null;
+  }
+}
+
 // 解析 LLM 调用选项：前端自定义优先，否则从 Hanako 宿主（provider:credentials）解析真实配置。
 // 这是对照 hana-code-atlas（代码图谱）修正的核心：此前读不到的 HANAKO_LLM_* 不再作为唯一来源。
 async function buildLlmOpts(ctx, llmCfg, body = {}) {
-  if (llmCfg && llmCfg.baseUrl && llmCfg.model) {
+  // 前端传入真实 key（非脱敏占位）时直接采用
+  if (llmCfg && llmCfg.baseUrl && llmCfg.model && llmCfg.apiKey && !String(llmCfg.apiKey).includes("****")) {
     return { baseUrl: llmCfg.baseUrl, apiKey: llmCfg.apiKey, model: llmCfg.model };
   }
   try {
@@ -322,7 +342,35 @@ async function buildLlmOpts(ctx, llmCfg, body = {}) {
   } catch (e) {
     ctx?.log?.warn?.("mail_llm.resolve_exception", { error: e?.message });
   }
+  // 新增：检测到的 Agent 配置（apiKey 存于 config.yaml，检测时脱敏、运行时回源）
+  if (llmCfg?.agentId) {
+    const ay = await resolveAgentYamlLlm(llmCfg.agentId);
+    if (ay) {
+      return {
+        baseUrl: llmCfg.baseUrl || ay.baseUrl,
+        apiKey: ay.apiKey,
+        model: llmCfg.model || ay.model,
+      };
+    }
+  }
   return {}; // 回退到 llm.mjs 内部的环境变量兜底
+}
+
+// 从邮件对象抽取发件人邮箱（兼容 from 为字符串 / 数组 / {address} 对象）
+function senderOf(msg) {
+  const f = msg && msg.from;
+  if (!f) return "";
+  if (typeof f === "string") {
+    const m = f.match(/[\w.+-]+@[\w-]+\.[\w.-]+/);
+    return m ? m[0].toLowerCase() : f.toLowerCase();
+  }
+  if (Array.isArray(f)) {
+    const first = f[0];
+    if (typeof first === "string") return senderOf({ from: first });
+    if (first && typeof first === "object" && first.address) return String(first.address).toLowerCase();
+  }
+  if (typeof f === "object" && f.address) return String(f.address).toLowerCase();
+  return "";
 }
 
 export default function (app, ctx) {
@@ -463,11 +511,53 @@ export default function (app, ctx) {
     if (!account) return c.json({ ok: false, error: "account not found" });
 
     try {
-      const result = await runInbox(["read", account.email, messageId], inboxEnvFor(account));
+      const folder = c.req.query("folder") || "INBOX";
+      const result = await runInbox(["read", account.email, messageId, `--folder=${folder}`], inboxEnvFor(account));
       if (result.error) return c.json({ ok: false, error: result.error });
       return c.json({ ok: true, data: result });
     } catch (e) {
       try { fs.appendFileSync(path.join(dataDir, "debug-read.log"), `[${new Date().toISOString()}] read fail id=${messageId} :: ${e.stack || e.message}\n`); } catch {}
+      return c.json({ ok: false, error: String(e.message || e) });
+    }
+  };
+
+  const deleteMessage = async (c) => {
+    const accountId = c.req.query("accountId") || "";
+    const messageId = c.req.param("messageId");
+
+    if (!accountId) return c.json({ ok: false, error: "accountId is required" });
+    const account = resolveAccount(accounts(), accountId);
+    if (!account) return c.json({ ok: false, error: "account not found" });
+
+    try {
+      // 传入来源文件夹，使后端两步删除（INBOX→垃圾箱，垃圾箱内→永久删）按正确分支执行
+      const folder = c.req.query("folder") || "INBOX";
+      const result = await runInbox(["delete", account.email, messageId, `--folder=${folder}`], inboxEnvFor(account));
+      if (result.error) return c.json({ ok: false, error: result.error });
+
+      // 从本地缓存移除已删邮件，使前端列表在下次加载时立即反映删除结果
+      try {
+        if (fs.existsSync(cacheDir)) {
+          const files = fs.readdirSync(cacheDir).filter(f => f.startsWith("messages-") && f.endsWith(".json"));
+          for (const f of files) {
+            const fp = path.join(cacheDir, f);
+            try {
+              const arr = JSON.parse(fs.readFileSync(fp, "utf-8"));
+              if (Array.isArray(arr)) {
+                const filtered = arr.filter(m => String(m.id) !== String(messageId));
+                if (filtered.length !== arr.length) {
+                  fs.writeFileSync(fp, JSON.stringify(filtered, null, 2));
+                }
+              }
+            } catch {}
+          }
+        }
+      } catch (cacheErr) {
+        console.warn("delete cache cleanup skipped:", cacheErr.message);
+      }
+
+      return c.json({ ok: true, data: result });
+    } catch (e) {
       return c.json({ ok: false, error: String(e.message || e) });
     }
   };
@@ -532,6 +622,20 @@ export default function (app, ctx) {
             messages = Array.from(byId.values()).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
             ctx.log?.info?.("mail_sync.monitor_fallback", { count: monitorMails.length });
           }
+        }
+      }
+
+      // 垃圾邮件自动过滤（6.3）：仅对收件箱执行，把黑名单发件人的邮件移入垃圾箱
+      if (folder === "INBOX") {
+        try {
+          const f = await runInbox(["filter-spam", account.email, `--fid=${folder}`], inboxEnvFor(account));
+          if (f && f.ok && Array.isArray(f.movedIds) && f.movedIds.length) {
+            const movedSet = new Set(f.movedIds);
+            messages = messages.filter((m) => !movedSet.has(String(m.id)));
+            ctx.log?.info?.("mail_sync.spam_auto_filtered", { count: f.movedIds.length });
+          }
+        } catch (e) {
+          ctx.log?.warn?.("mail_sync.spam_filter_failed", { error: e.message });
         }
       }
 
@@ -710,7 +814,7 @@ export default function (app, ctx) {
         updateLocalRead(false);
         return c.json({ ok: true, data: { fallback: true, reason: "mark-unread-local" } });
       }
-      const result = await runInbox(["mark-read", account.email, messageId], inboxEnvFor(account));
+      const result = await runInbox(["mark-read", account.email, messageId, `--folder=${folder}`], inboxEnvFor(account));
       if (result && result.error) {
         updateLocalRead(true);
         return c.json({ ok: true, data: { fallback: true, reason: String(result.error).slice(0, 200) } });
@@ -722,6 +826,74 @@ export default function (app, ctx) {
       updateLocalRead(wantRead);
       return c.json({ ok: true, data: { fallback: true, reason: String(e.message || e).slice(0, 200) } });
     }
+  };
+
+  const postMarkSpam = async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const accountId = body?.accountId || "";
+    const messageId = body?.messageId || "";
+    const folder = body?.folder || "INBOX";
+    if (!accountId || !messageId) return c.json({ ok: false, error: "accountId/messageId is required" });
+    const account = resolveAccount(accounts(), accountId);
+    if (!account) return c.json({ ok: false, error: "account not found" });
+
+    const depIssue = checkBackendDeps(account);
+    if (handleDepIssue(c, depIssue)) return;
+
+    try {
+      // 先从缓存取出该邮件的发件人，用于联动黑名单
+      let senderEmail = "";
+      try {
+        const fp = path.join(cacheDir, `messages-${accountId}-${folder}.json`);
+        const arr = readJson(fp, null);
+        if (Array.isArray(arr)) {
+          const hit = arr.find(m => String(m.id) === String(messageId));
+          if (hit) senderEmail = senderOf(hit);
+        }
+      } catch {}
+
+      const result = await runInbox(["spam", account.email, messageId], inboxEnvFor(account));
+      if (result && result.error) return c.json({ ok: false, error: result.error });
+
+      // 从原文件夹缓存移除（已移到垃圾箱，列表不应再显示）
+      try {
+        const fp = path.join(cacheDir, `messages-${accountId}-${folder}.json`);
+        const arr = readJson(fp, null);
+        if (Array.isArray(arr)) {
+          const filtered = arr.filter(m => String(m.id) !== String(messageId));
+          if (filtered.length !== arr.length) writeJson(fp, filtered);
+        }
+      } catch {}
+
+      // 联动：标记为垃圾 → 把发件人写入黑名单（6.4），下次同步自动拦截
+      let blacklisted = false;
+      if (senderEmail) {
+        try { blocklist.addToBlacklist(senderEmail); blacklisted = true; } catch {}
+      }
+
+      return c.json({ ok: true, data: result, blacklisted, senderEmail });
+    } catch (e) {
+      return c.json({ ok: false, error: String(e.message || e) });
+    }
+  };
+
+  const getBlocklist = async (c) => {
+    return c.json({ ok: true, data: blocklist.getBlocklist() });
+  };
+
+  const postBlocklist = async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const type = body?.type === "white" ? "white" : "black";
+    const email = (body?.email || "").trim();
+    const action = body?.action === "remove" ? "remove" : "add";
+    if (!email) return c.json({ ok: false, error: "email is required" });
+    let data;
+    if (type === "white") {
+      data = action === "remove" ? blocklist.removeFromWhitelist(email) : blocklist.addToWhitelist(email);
+    } else {
+      data = action === "remove" ? blocklist.removeFromBlacklist(email) : blocklist.addToBlacklist(email);
+    }
+    return c.json({ ok: true, data });
   };
 
   const getSearch = async (c) => {
@@ -750,6 +922,7 @@ export default function (app, ctx) {
     const messageId = c.req.param("messageId");
     const partId = c.req.param("partId");
     const asDownload = c.req.query("download") === "1";
+    const folder = c.req.query("folder") || "INBOX";
     if (!accountId || !messageId || !partId) {
       return c.json({ ok: false, error: "accountId/messageId/partId is required" }, 400);
     }
@@ -758,7 +931,7 @@ export default function (app, ctx) {
     const depIssue = checkBackendDeps(account);
     if (handleDepIssue(c, depIssue)) return;
     try {
-      const r = await runInbox(["attachment", account.email, messageId, partId], inboxEnvFor(account));
+      const r = await runInbox(["attachment", account.email, messageId, partId, `--folder=${folder}`], inboxEnvFor(account));
       if (r && r.error) return c.json({ ok: false, error: String(r.error) }, 400);
       if (!r || !r.base64) return c.json({ ok: false, error: "attachment not found" }, 404);
       const buf = Buffer.from(r.base64, "base64");
@@ -916,19 +1089,21 @@ export default function (app, ctx) {
             const cfgBaseUrl = cfg?.api?.base_url || cfg?.api?.endpoint || "";
             const baseUrl = cfgBaseUrl || PROVIDER_PRESETS[modelProvider] || "";
             const displayProvider = chatProvider || apiProvider;
+            // 直接从 agent 的 config.yaml 提取 api_key（若配置了则自动可用，无需手填）
+            const cfgApiKey = asStr(cfg?.api?.api_key || cfg?.api_key || "").trim();
             detected.push({
               name: `Agent: ${agentId}` + (chatModel ? ` · ${chatModel}` : ""),
               provider: displayProvider,
               apiProvider,
               chatProvider,
               baseUrl,
-              apiKey: "", // 凭据在 added-models.yaml / 设置页管理，检测不返回明文
+              apiKey: cfgApiKey ? cfgApiKey.slice(0, 8) + "****" : "", // 仅返回脱敏占位，真实 key 运行时由 resolveAgentYamlLlm 回源
               model: chatModel || "",
               agentId,
               utilityModel,
               embeddingModel,
-              note: `来源: ${cfgPath}`,
-              needsKey: true,
+              note: cfgApiKey ? `来源: ${cfgPath}（已含 API Key，可一键使用）` : `来源: ${cfgPath}`,
+              needsKey: !cfgApiKey,
               needsBaseUrl: !baseUrl,
             });
           } catch {}
@@ -1007,12 +1182,16 @@ export default function (app, ctx) {
   app.get("/folders", getFolders);
   app.get("/messages", getMessages);
   app.get("/messages/:messageId", getMessageById);
+  app.delete("/messages/:messageId", deleteMessage);
   app.post("/sync", postSync);
   app.post("/send", postSend);
   app.post("/forward", postForward);
   app.post("/summarize", postSummarize);
   app.post("/translate", postTranslate);
   app.post("/mark-read", postMarkRead);
+  app.post("/mark-spam", postMarkSpam);
+  app.get("/blocklist", getBlocklist);
+  app.post("/blocklist", postBlocklist);
   app.get("/search", getSearch);
   app.get("/attachments/:messageId/:partId", getAttachment);
   app.get("/image-proxy", getImageProxy);
@@ -1173,4 +1352,41 @@ export default function (app, ctx) {
   const pollTimer = setInterval(pollAccounts, POLL_INTERVAL_MS);
   // 首次加载时检查一次（延迟 30 秒，避免阻塞启动）
   setTimeout(pollAccounts, 30 * 1000);
+
+  // ── 后台自动同步（用户需求：自动同步，而非仅手动） ──
+  const AUTO_SYNC_INTERVAL_MS = 3 * 60 * 1000; // 3 分钟
+  let autoSyncRunning = false;
+  async function autoSyncAccounts() {
+    if (autoSyncRunning) return; // 防止与手动同步或上一轮重叠
+    autoSyncRunning = true;
+    try {
+      const list = accounts();
+      for (const account of list) {
+        try {
+          const messagesRaw = await runInbox(["list", account.email, "--fid=INBOX", "--limit=50"], inboxEnvFor(account));
+          const messages = Array.isArray(messagesRaw) ? messagesRaw : [];
+          // 自动过滤垃圾邮件（6.3）：移走黑名单发件人邮件后再落缓存
+          try {
+            const f = await runInbox(["filter-spam", account.email, "--fid=INBOX"], inboxEnvFor(account));
+            if (f && f.ok && Array.isArray(f.movedIds) && f.movedIds.length) {
+              const movedSet = new Set(f.movedIds);
+              writeJson(path.join(cacheDir, `messages-${account.id}-INBOX.json`), messages.filter((m) => !movedSet.has(String(m.id))));
+            } else {
+              writeJson(path.join(cacheDir, `messages-${account.id}-INBOX.json`), messages);
+            }
+          } catch (fe) {
+            ctx?.log?.warn?.("auto_sync.spam_filter_failed", { account: account.id, error: fe.message });
+            writeJson(path.join(cacheDir, `messages-${account.id}-INBOX.json`), messages);
+          }
+        } catch (e) {
+          ctx?.log?.warn?.("auto_sync.failed", { account: account.id, error: e.message });
+        }
+      }
+    } finally {
+      autoSyncRunning = false;
+    }
+  }
+  setInterval(autoSyncAccounts, AUTO_SYNC_INTERVAL_MS);
+  // 启动后 15 秒先做一轮，避免用户等待 3 分钟
+  setTimeout(autoSyncAccounts, 15 * 1000);
 }

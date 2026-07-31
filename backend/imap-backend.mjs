@@ -196,6 +196,73 @@ function closeImap(imap) {
   try { imap.end(); } catch {}
 }
 
+// ── 已发送副本保存 ─────────────────────────────────────
+
+function findSentFolderName(boxes, delimiter) {
+  if (!boxes || typeof boxes !== "object") return null;
+  const delim = delimiter || "/";
+  const candidates = ["sent", "已发送", "gesendet", "sent items", "envoyés", "enviados", "보낸메일"];
+  function walk(obj, prefix) {
+    for (const [name, box] of Object.entries(obj)) {
+      const fullName = prefix ? `${prefix}${delim}${name}` : name;
+      const lower = name.toLowerCase();
+      if (candidates.includes(lower) || lower.includes("sent")) return fullName;
+      if (box && box.children) {
+        const found = walk(box.children, fullName);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+  return walk(boxes, "");
+}
+
+function buildRawMessage(mailOptions) {
+  return new Promise((resolve, reject) => {
+    // nodemailer v9 起 mail-composer 改为 ESM 目录导入（lib/mail-composer/index.js），
+    // 且为 default 导出。旧路径 lib/mail-composer 在 v9 不存在，故用动态导入规避
+    // 「模块加载期静态 import 失败导致整个 IMAP 后端崩溃」的风险。
+    import("nodemailer/lib/mail-composer/index.js")
+      .then((mod) => {
+        const MailComposer = mod.MailComposer || mod.default;
+        if (typeof MailComposer !== "function") {
+          return reject(new Error("MailComposer export not found"));
+        }
+        const mail = new MailComposer(mailOptions);
+        mail.compile().build((err, message) => {
+          if (err) return reject(err);
+          resolve(message);
+        });
+      })
+      .catch(reject);
+  });
+}
+
+async function appendToSent(email, mailOptions) {
+  let imap;
+  try {
+    const raw = await buildRawMessage(mailOptions);
+    const config = getImapConfig(email);
+    imap = await connectImap(config);
+    const boxes = await new Promise((resolve, reject) => {
+      imap.getBoxes((err, b) => (err ? reject(err) : resolve(b)));
+    });
+    const delim = imap.delimiter || config.delimiter || "/";
+    const sentName = findSentFolderName(boxes, delim) || "Sent";
+    await new Promise((resolve, reject) => {
+      imap.append(raw, { mailbox: sentName, flags: ["\\Seen"] }, (err) => {
+        if (err) return reject(err);
+        resolve();
+      });
+    });
+  } catch (e) {
+    // 保存到「已发送」失败不应影响已发出的邮件，仅记录告警
+    console.warn("[imap-backend] appendToSent failed:", e && e.message);
+  } finally {
+    if (imap) closeImap(imap);
+  }
+}
+
 // ── 公开 API ──────────────────────────────────────────
 
 export async function listMessages(email, options = {}) {
@@ -220,7 +287,7 @@ export async function readMessage(email, messageId, options = {}) {
   const config = getImapConfig(email);
   const imap = await connectImap(config);
   try {
-    await openBox(imap, "INBOX");
+    await openBox(imap, options.folder || "INBOX");
     const uid = parseInt(messageId, 10);
     if (isNaN(uid)) throw new Error(`invalid messageId: ${messageId}`);
     const rawMessages = await fetchMessages(imap, [uid], { bodies: "" });
@@ -230,6 +297,48 @@ export async function readMessage(email, messageId, options = {}) {
   } finally {
     closeImap(imap);
   }
+}
+
+export async function deleteMessage(email, messageId, options = {}) {
+  const config = getImapConfig(email);
+  const folder = options.folder || "INBOX";
+  const imap = await connectImap(config);
+  try {
+    // 两步删除：在垃圾箱内删除 = 永久删；其它文件夹删除 = 移到垃圾箱
+    const isTrash = await isTrashFolder(email, folder);
+    if (!isTrash) {
+      const trash = await findTrashFolder(email);
+      if (trash) {
+        await moveMessage(email, messageId, trash.id, folder);
+        return { deleted: false, movedToTrash: true, targetFid: trash.id };
+      }
+    }
+    // 永久删除（已在垃圾箱，或账号无垃圾箱文件夹时）
+    await openBox(imap, folder);
+    const uid = parseInt(messageId, 10);
+    if (isNaN(uid)) throw new Error(`invalid messageId: ${messageId}`);
+    await new Promise((resolve, reject) => {
+      imap.addFlags(uid, "\\Deleted", (err) => (err ? reject(err) : resolve()));
+    });
+    await new Promise((resolve, reject) => {
+      imap.expunge((err) => (err ? reject(err) : resolve()));
+    });
+    return { deleted: true, uid };
+  } finally {
+    closeImap(imap);
+  }
+}
+
+async function isTrashFolder(email, folderName) {
+  const folders = await listFolders(email);
+  const f = folders.find((x) => x.id === folderName || x.name === folderName);
+  return !!(f && (f.type === "trash" || /trash|deleted|垃圾箱|废纸|已删除/.test(String(f.name || "").toLowerCase())));
+}
+
+async function findTrashFolder(email) {
+  const folders = await listFolders(email);
+  return folders.find((f) => f.type === "trash")
+    || folders.find((f) => /trash|deleted|垃圾箱|废纸|已删除/.test(String(f.name || f.id || "").toLowerCase()));
 }
 
 export async function sendMail(email, options) {
@@ -259,6 +368,10 @@ export async function sendMail(email, options) {
 
   const info = await transporter.sendMail(mailOptions);
   transporter.close();
+
+  // 保存副本到「已发送」文件夹（失败不影响已发送动作）
+  await appendToSent(email, mailOptions);
+
   return { messageId: info.messageId, accepted: info.accepted, rejected: info.rejected };
 }
 
@@ -291,15 +404,19 @@ export async function replyToMail(email, messageId, options = {}) {
 
   const info = await transporter.sendMail(mailOptions);
   transporter.close();
+
+  // 保存副本到「已发送」文件夹（失败不影响已发送动作）
+  await appendToSent(email, mailOptions);
+
   return { messageId: info.messageId };
 }
 
-export async function downloadAttachment(email, messageId, partId, outputDir) {
+export async function downloadAttachment(email, messageId, partId, outputDir, folder) {
   if (!outputDir) throw new Error("downloadAttachment: 'outputDir' is required");
   const config = getImapConfig(email);
   const imap = await connectImap(config);
   try {
-    await openBox(imap, "INBOX");
+    await openBox(imap, folder || "INBOX");
     const uid = parseInt(messageId, 10);
     if (isNaN(uid)) throw new Error(`invalid messageId: ${messageId}`);
 
@@ -379,6 +496,10 @@ export async function forwardMail(email, messageId, options = {}) {
 
   const info = await transporter.sendMail(mailOptions);
   transporter.close();
+
+  // 保存副本到「已发送」文件夹（失败不影响已发送动作）
+  await appendToSent(email, mailOptions);
+
   return { messageId: info.messageId, accepted: info.accepted, rejected: info.rejected };
 }
 
@@ -424,11 +545,11 @@ function mapType(name) {
   return "custom";
 }
 
-export async function markRead(email, messageId, read = true) {
+export async function markRead(email, messageId, read = true, folder) {
   const config = getImapConfig(email);
   const imap = await connectImap(config);
   try {
-    await openBox(imap, "INBOX");
+    await openBox(imap, folder || "INBOX");
     const uid = parseInt(messageId, 10);
     if (isNaN(uid)) throw new Error(`invalid messageId: ${messageId}`);
     await new Promise((resolve, reject) => {
@@ -444,11 +565,21 @@ export async function markRead(email, messageId, read = true) {
   }
 }
 
-export async function moveMessage(email, messageId, targetFid) {
+export async function markSpam(email, messageId, options = {}) {
+  const folders = await listFolders(email);
+  const spam = folders.find(f => f.type === "spam")
+    || folders.find(f => /spam|junk|垃圾/.test(String(f.name || f.id || "").toLowerCase()));
+  if (!spam) throw new Error("未找到垃圾邮件文件夹");
+  return await moveMessage(email, messageId, spam.id, options.folder);
+}
+
+export async function moveMessage(email, messageId, targetFid, sourceFolder) {
   const config = getImapConfig(email);
   const imap = await connectImap(config);
   try {
-    await openBox(imap, "INBOX");
+    // 打开"源文件夹"（消息当前所在位置），而非固定 INBOX —— 否则非 INBOX 邮件无法定位 UID，两步删除/标记垃圾会失败
+    const srcFolder = sourceFolder || "INBOX";
+    await openBox(imap, srcFolder);
     const uid = parseInt(messageId, 10);
     if (isNaN(uid)) throw new Error(`invalid messageId: ${messageId}`);
 
