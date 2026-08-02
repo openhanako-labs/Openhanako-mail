@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.2] — 2026-08-02
+
+### 移除（半成品清理）
+- **删除 `backend/identity.mjs`（访客意识引擎）**：自动回复 / 验证码提取 / 隐私脱敏规则全链路无消费者（ws-monitor 定义了 `getAwareness` 但从未调用，inbox 的 `needsConfirmation` 恒为 false），属半成品。连同 ws-monitor 的 `getAwareness`、缓存对象中的 `identity` / `isExternal` / `replyDecision` 字段一并移除。
+- **删除 `_pending_send` 待发送队列**（inbox.mjs 的 `queuePendingSend` / `needsConfirmation`）：该队列无消费者、`needsConfirmation` 恒返回 false（邮件实际直接发出），属死代码。send / reply / forward 现直接执行，不再有"排队却发不出"的假成功路径。
+- **删除 `email-monitor` 本地存档回退**（routes/ui.js 与 tools/sync.js 的 `readEmailMonitorData`）：开发期残留（硬编码 `W:\Games\Hanako\Work\projects\email-monitor\data`），与插件产品逻辑无关，开源分发不应携带。
+
+### 功能新增
+- **账号编辑**：`POST /accounts` 支持 `action: update`（按 id 更新名称/邮箱/provider；apiKey 仅非空时更新；config 按字段合并，`imapPass` / `smtpPass` 传空字符串可清除）。前端账号卡片新增「改」按钮：回填表单进入编辑模式，密码字段不回显、留空即保留原值；「删」按钮增加二次确认。
+
 ## [0.1.1] — 2026-08-02
 
 ### 安全修复（Security）

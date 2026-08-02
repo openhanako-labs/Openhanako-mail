@@ -58,34 +58,6 @@ function readWsCache(ctx, accountId) {
   return files;
 }
 
-function readEmailMonitorData(accountEmail) {
-  const base = process.env.EMAIL_MONITOR_DATA_DIR || path.join("W:\\", "Games", "Hanako", "Work", "projects", "email-monitor", "data");
-  const files = [];
-  try {
-    const entries = fs.readdirSync(base);
-    for (const entry of entries) {
-      const emailPath = path.join(base, entry, "email.json");
-      if (!fs.existsSync(emailPath)) continue;
-      try {
-        const content = JSON.parse(fs.readFileSync(emailPath, "utf-8"));
-        const toList = Array.isArray(content.to) ? content.to : [content.to || ""];
-        if (toList.some(t => t && t.includes(accountEmail))) {
-          files.push({
-            id: content.mailId || entry,
-            from: content.from && content.from[0] ? content.from[0] : "",
-            subject: content.subject || "(无主题)",
-            date: content.date || "",
-            size: 0,
-            read: true,
-            platform: "email-monitor",
-          });
-        }
-      } catch {}
-    }
-  } catch {}
-  return files;
-}
-
 export const name = "mail_sync";
 export const description = "同步邮箱文件夹";
 
@@ -139,21 +111,6 @@ export async function execute(input, ctx) {
           }
         }
         messages = Array.from(byId.values()).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
-      }
-
-      // 如果 REST API 返回的还是旧数据，补充 email-monitor 本地存档
-      if (messages.length === 0 || (messages.length > 0 && messages[0].date && messages[0].date < "2026-07-01")) {
-        const monitorMails = readEmailMonitorData(account.email);
-        if (monitorMails.length) {
-          const byId = new Map(messages.map(m => [m.id, m]));
-          for (const m of monitorMails) {
-            if (!byId.has(m.id)) {
-              byId.set(m.id, m);
-            }
-          }
-          messages = Array.from(byId.values()).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
-          ctx.log?.info?.("mail_sync.monitor_fallback", { count: monitorMails.length });
-        }
       }
     }
 

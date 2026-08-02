@@ -15,7 +15,8 @@ Hanako Mail 插件
 │   ├── clawemail-backend   ClawEmail SDK 后端
 │   ├── agentqq-backend     AgentQQ agently-cli 后端
 │   ├── imap-backend        IMAP/SMTP 个人邮箱后端
-│   ├── identity.mjs        访客意识引擎
+│   ├── cred-crypto.mjs     凭据 AES-256-GCM 加解密（统一实现）
+│   ├── blocklist.mjs       黑/白名单
 │   └── common.mjs          公共工具函数
 ├── helper/         桌面通知助手
 ├── assets/         前端资源
@@ -42,7 +43,7 @@ cd backend && npm install
 | AgentQQ | `@agent.qq.com` | API Key |
 | 个人邮箱 | 其他域名 | IMAP/SMTP 密码 |
 
-在插件 UI 中添加账号时填写对应信息即可。
+在插件 UI 中添加账号时填写对应信息即可。账号创建后**可随时编辑**（名称/邮箱/凭据），密码字段留空即保留原值；删除账号有二次确认。
 
 ## 后端能力矩阵
 
@@ -70,11 +71,12 @@ cd backend && npm install
 
 - **凭据静态加密**：`apiKey` / `imapPass` / `smtpPass` 在写入 `accounts.json` 前使用 **AES-256-GCM** 加密。密钥由 `scrypt(用户名 + per-install 随机盐)` 派生（盐存于插件数据目录 `.cred-salt`），仅凭 `accounts.json` 无法离线推导密钥，跨机器无法直接读取；兼容解密旧格式（v0.1.0 的硬编码盐格式）。明文凭据不进前端、不写日志。
 - **凭据传递**：后端凭据经进程环境变量（`CLAWEMAIL_API_KEY` / `IMAP_*` / `SMTP_*`）从 `accounts.json` 透传，子进程仅在缺失时回退读 `backend/.env`。
-- **访客意识 / 外部邮件隐私**：`identity.mjs` 维护内部联系人白名单。发送给外部收件人时进入待发送队列并需桌面确认；外部来信在 UI 中做隐私脱敏提示。
 - **正文渲染沙箱**：HTML 正文在 `sandbox` 属性 iframe 中渲染（`srcdoc`），防止邮件内脚本逃逸。
 - **外网图片代理**：正文中的外网 `<img>` / CSS `url()` 改写为同源 `/image-proxy?url=...`，由独立子进程拉取。代理仅接受 http/https，初始 URL 与每次重定向均校验 host（屏蔽私网/回环）、DNS 解析后校验解析 IP（防 rebinding）、限制响应 8MB，规避 SSRF。
 - **无 shell 执行**：所有外部 CLI（`agently-cli` / `mail-cli`）均解析出真实 JS 入口后用 `spawn(node, [entry, ...args], { shell: false })` 执行，用户可控参数不经过 cmd.exe 解析，杜绝命令注入。
 - **LLM 凭据不回前端**：总结/翻译/连接测试的 API Key 一律服务端回源（宿主 `provider:credentials` / agent `config.yaml`），浏览器与 localStorage 不接触明文 Key。
+
+> 说明：v0.1.0 曾规划「外部收件人需桌面确认后发送」（`identity.mjs` 访客意识 + `_pending_send` 队列），该机制无消费者、队列空转，已在 v0.1.2 移除。当前 send / reply / forward 直接执行；如后续需要「外部收件人确认」，应实现真正的确认消费者。
 
 ## 环境变量配置参考
 

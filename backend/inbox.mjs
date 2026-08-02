@@ -4,10 +4,12 @@
  * 按目标 account 自动选 backend：
  *   - @claw.163.com → clawemail.js（SDK + mail-cli）
  *   - @agent.qq.com → agentqq.js（agently-cli）
+ *   - 其他域名 → imap.js（IMAP/SMTP）
  * 
- * 白名单逻辑（identity.mjs）：
- *   - 内部联系人（EMAIL_INTERNAL_CONTACTS）→ 直接发送
- *   - 外部 → 写入 _pending_send/ 队列，桌面通知确认
+ * 发送策略：所有 send/reply/forward 直接执行。
+ * 说明：v0.1.0 曾设计「外部收件人写入 _pending_send 队列待桌面确认」，
+ * 该队列无消费者、needsConfirmation 恒为 false，属于死代码，已在 v0.1.2 移除。
+ * 如后续需要「外部收件人确认」，应实现真正的确认消费者而非队列空转。
  * 
  * 用法（作为模块）：
  *   import { listMessages, readMessage, send, reply, ... } from "./inbox.mjs";
@@ -22,7 +24,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildFromEnv } from "./identity.mjs";
 import * as clawemail from "./clawemail-backend.mjs";
 import * as agentqq from "./agentqq-backend.mjs";
 import * as imap from "./imap-backend.mjs";
@@ -30,7 +31,6 @@ import * as blocklist from "./blocklist.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, "data");
-const PENDING_SEND_DIR = path.join(DATA_DIR, "_pending_send");
 const TEMP_DIR = path.join(DATA_DIR, "_imap_tmp");
 const ENV_PATH = path.join(__dirname, ".env");
 
@@ -94,53 +94,6 @@ function getAccount(email) {
   const config = resolveAccountConfig(email);
   accountCache.set(email, config);
   return config;
-}
-
-// ── 白名单检查 ──────────────────────────────────────────
-
-const awareness = buildFromEnv();
-
-function needsConfirmation(email) {
-  const from = Array.isArray(email.from) ? email.from.join(" ") : (email.from || "");
-  const fromStr = from.toLowerCase();
-  
-  for (const contact of awareness.internalContacts) {
-    if (fromStr.includes(contact.toLowerCase())) return false;
-  }
-  
-  const ownEmails = [
-    process.env.CLAWEMAIL_ADDRESS,
-    ...(process.env.CLAWEMAIL_EXTRA_ADDRESSES || "").split(",").map(s => s.trim()),
-    ...(process.env.AGENTQQ_EXTRA_ADDRESSES || "").split(",").map(s => s.trim()),
-  ].filter(Boolean).map(e => e.toLowerCase());
-  
-  for (const own of ownEmails) {
-    if (fromStr.includes(own)) return false;
-  }
-
-  // ⚠️ 注意：下方默认返回值原为 true，会导致所有外部发件人的转发/回复被静默转入
-  // _pending_send 队列（该队列当前无任何消费者），邮件实际未发出却返回"成功"。
-  // 在确认消费者机制落地前，统一改为直接发送（return false），保证转发/回复真实送达。
-  return false;
-}
-
-// ── 待发送队列 ──────────────────────────────────────────
-
-function queuePendingSend(account, operation, targetEmail, payload) {
-  fs.mkdirSync(PENDING_SEND_DIR, { recursive: true });
-  const id = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  const file = path.join(PENDING_SEND_DIR, `${id}.json`);
-  const entry = {
-    id,
-    account,
-    operation,
-    targetEmail,
-    payload,
-    createdAt: new Date().toISOString(),
-    status: "pending",
-  };
-  fs.writeFileSync(file, JSON.stringify(entry, null, 2));
-  return entry;
 }
 
 // ── 统一 API ───────────────────────────────────────────
@@ -242,11 +195,6 @@ export async function getAttachmentData(accountEmail, messageId, partId, folder)
 export async function sendMail(accountEmail, options, context = {}) {
   const config = getAccount(accountEmail);
   
-  if (context.originalEmail && needsConfirmation(context.originalEmail)) {
-    const queueEntry = queuePendingSend(accountEmail, "send", options.to, options);
-    return { queued: true, queueId: queueEntry.id, reason: "external_recipient" };
-  }
-  
   options = await normalizeAttachments(config, options);
   
   let result;
@@ -270,11 +218,6 @@ export async function reply(accountEmail, messageId, options = {}) {
     throw new Error(`reply: failed to read original email: ${e.message}`);
   }
   
-  if (needsConfirmation(originalEmail)) {
-    const queueEntry = queuePendingSend(accountEmail, "reply", messageId, options);
-    return { queued: true, queueId: queueEntry.id, reason: "external_sender", originalEmail };
-  }
-  
   options = await normalizeAttachments(config, options);
   
   let result;
@@ -296,11 +239,6 @@ export async function forward(accountEmail, messageId, options = {}) {
     originalEmail = await readMessage(accountEmail, messageId);
   } catch (e) {
     throw new Error(`forward: failed to read original email: ${e.message}`);
-  }
-  
-  if (needsConfirmation(originalEmail)) {
-    const queueEntry = queuePendingSend(accountEmail, "forward", options.to, { messageId, ...options });
-    return { queued: true, queueId: queueEntry.id, reason: "external_sender", originalEmail };
   }
   
   options = await normalizeAttachments(config, options);

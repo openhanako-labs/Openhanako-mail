@@ -4,7 +4,6 @@
  * 功能：
  * - 为每个 ClawEmail 账号建立 WebSocket 连接
  * - 收到新邮件后写入 plugin-data 缓存
- * - 可选：根据 identity 规则自动回复
  * - 收到新邮件后直接调用 helper/mail-toast.cjs 弹系统级桌面通知
  */
 
@@ -14,7 +13,6 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
-import { buildFromEnv } from "./identity.mjs";
 // accounts.json 中的 apiKey 是加密存储的（routes/ui.js 加密落盘），读取后必须解密，
 // 否则 MailClient 会拿到 "ENC:..." 密文导致 WebSocket 实时收件失效。
 import { setCryptoDataDir, decryptSensitiveFields } from "./cred-crypto.mjs";
@@ -99,17 +97,6 @@ function notifyDesktop(subject, sender, messageId, accountId) {
   }
 }
 
-let identityCache = null;
-function getAwareness() {
-  if (!identityCache) {
-    try { identityCache = buildFromEnv(); } catch (e) {
-      log("WARN", "identity 加载失败", { err: e.message });
-      identityCache = { route: () => ({ identity: "unknown", isExternal: true, shouldAutoReply: false, requireReply: false, autoTag: [] }), scrub: (t) => t, map: new Map() };
-    }
-  }
-  return identityCache;
-}
-
 async function startAccount(account) {
   if (!account.apiKey || !account.email) return;
   if (!account.email.endsWith("@claw.163.com")) return; // 只处理 ClawEmail
@@ -159,9 +146,6 @@ async function startAccount(account) {
         attachments: email.attachments?.map(a => ({ id: a.id, filename: a.filename, contentType: a.contentType, size: a.size })),
         platform: "clawemail",
         accountId,
-        identity: "unknown",
-        isExternal: true,
-        replyDecision: "none",
         receivedAt: new Date().toISOString(),
       };
 

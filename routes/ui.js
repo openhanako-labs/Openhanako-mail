@@ -374,34 +374,6 @@ export default function (app, ctx) {
     return files;
   }
 
-  function readEmailMonitorData(accountEmail) {
-    const base = process.env.EMAIL_MONITOR_DATA_DIR || path.join("W:\\", "Games", "Hanako", "Work", "projects", "email-monitor", "data");
-    const files = [];
-    try {
-      const entries = fs.readdirSync(base);
-      for (const entry of entries) {
-        const emailPath = path.join(base, entry, "email.json");
-        if (!fs.existsSync(emailPath)) continue;
-        try {
-          const content = JSON.parse(fs.readFileSync(emailPath, "utf-8"));
-          const toList = Array.isArray(content.to) ? content.to : [content.to || ""];
-          if (toList.some(t => t && t.includes(accountEmail))) {
-            files.push({
-              id: content.mailId || entry,
-              from: content.from && content.from[0] ? content.from[0] : "",
-              subject: content.subject || "(无主题)",
-              date: content.date || "",
-              size: 0,
-              read: true,
-              platform: "email-monitor",
-            });
-          }
-        } catch {}
-      }
-    } catch {}
-    return files;
-  }
-
   function accounts() {
     const raw = readJson(path.join(dataDir, "accounts.json"), []);
     return raw.map(decryptSensitiveFields);
@@ -440,6 +412,29 @@ export default function (app, ctx) {
       if (body.apiKey) account.apiKey = body.apiKey;
       if (body.config && typeof body.config === "object") account.config = body.config;
       list.push(account);
+      saveAccounts(list);
+      return c.json({ ok: true, data: list });
+    }
+    if (body.action === "update" && body.id) {
+      const idx = list.findIndex((a) => a.id === body.id);
+      if (idx < 0) return c.json({ ok: false, error: "account not found" }, 404);
+      const account = list[idx];
+      const updated = { ...account, updatedAt: Date.now() };
+      if (typeof body.name === "string" && body.name) updated.name = body.name;
+      if (typeof body.email === "string" && body.email) updated.email = body.email;
+      if (typeof body.provider === "string" && body.provider) updated.provider = body.provider;
+      // 凭据仅在显式提供非空值时才更新；空值 / 未提供 = 保留原值（前端不回显密码）
+      if (body.apiKey !== undefined && String(body.apiKey).trim()) {
+        updated.apiKey = String(body.apiKey).trim();
+      }
+      if (body.config && typeof body.config === "object") {
+        updated.config = { ...(updated.config || {}), ...body.config };
+        // 显式传空字符串的密码字段 = 清除该字段
+        for (const k of ["imapPass", "smtpPass"]) {
+          if (body.config[k] === "") delete updated.config[k];
+        }
+      }
+      list[idx] = updated;
       saveAccounts(list);
       return c.json({ ok: true, data: list });
     }
@@ -569,21 +564,6 @@ export default function (app, ctx) {
             }
           }
           messages = Array.from(byId.values()).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
-        }
-
-        // 如果 REST API 返回的还是旧数据，补充 email-monitor 本地存档
-        if (messages.length === 0 || (messages.length > 0 && messages[0].date && messages[0].date < "2026-07-01")) {
-          const monitorMails = readEmailMonitorData(account.email);
-          if (monitorMails.length) {
-            const byId = new Map(messages.map(m => [m.id, m]));
-            for (const m of monitorMails) {
-              if (!byId.has(m.id)) {
-                byId.set(m.id, m);
-              }
-            }
-            messages = Array.from(byId.values()).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
-            ctx.log?.info?.("mail_sync.monitor_fallback", { count: monitorMails.length });
-          }
         }
       }
 

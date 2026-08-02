@@ -162,6 +162,11 @@ body[data-hana-theme="dark"] .workspace { background: #1e1914; }
 .folder .acct-del {
   position: absolute; right: 6px; top: 5px; padding: 1px 6px; font-size: 10px;
 }
+/* 账号卡片操作按钮（改 / 删） */
+.acct .acct-ops {
+  position: absolute; right: 6px; top: 5px; display: flex; gap: 4px;
+}
+.acct .acct-ops .btn { padding: 1px 7px; font-size: 10px; line-height: 1.6; }
 
 .main {
   min-height: 0; border: 1px solid var(--border); border-radius: 6px;
@@ -529,7 +534,7 @@ setTimeout(function(){try{window.parent.postMessage({source:'hana-plugin',type:'
           <div class="card-list" id="ovCards"></div>
           <hr class="sep">
           <div class="panel" id="addAccountPanel">
-            <div class="panel-title">添加账号</div>
+            <div class="panel-title" id="addAccountTitle">添加账号</div>
             <form id="addAccountForm" class="field">
               <input class="inp" id="accName" placeholder="名称（如：奥菲莉娅）" required>
               <input class="inp" id="accEmail" placeholder="邮箱地址（决定后端选择）" required>
@@ -1010,7 +1015,10 @@ function loadAccounts() {
       return '<button class="acct' + (a.id === state.accountId ? ' active' : '') + '" data-acct="' + a.id + '">' +
         '<span>' + esc(a.name) + '</span>' +
         '<span class="sub">' + esc(a.email) + '</span>' +
-        '<span class="acct-del"><button class="btn danger small" data-del-acct="' + a.id + '">删</button></span>' +
+        '<span class="acct-ops">' +
+          '<button class="btn small" data-edit-acct="' + a.id + '">改</button>' +
+          '<button class="btn danger small" data-del-acct="' + a.id + '">删</button>' +
+        '</span>' +
         '</button>';
     }).join('');
     if (!state.accountId) selectAccount(state.accounts[0].id);
@@ -1648,9 +1656,16 @@ document.getElementById('blWhiteList').addEventListener('click', function (e) {
 loadBlocklist();
 
 document.addEventListener('click', function (e) {
+  var editAcct = e.target.closest('[data-edit-acct]');
+  if (editAcct) {
+    e.stopPropagation();
+    editAccount(editAcct.getAttribute('data-edit-acct'));
+    return;
+  }
   var delAcct = e.target.closest('[data-del-acct]');
   if (delAcct) {
     e.stopPropagation();
+    if (!confirm('确定删除该邮箱账号吗？')) return;
     api('/accounts', { method: 'POST', body: JSON.stringify({ action: 'delete', id: delAcct.getAttribute('data-del-acct') }) }).then(function () { return loadAccounts(); });
     return;
   }
@@ -1739,7 +1754,43 @@ function midForDetail() {
   return el ? el.getAttribute('data-message-id') : null;
 }
 
-/* ── 添加账号 ── */
+/* ── 添加 / 编辑账号 ── */
+var _editingAccountId = null;
+
+// 进入编辑模式：把账号数据回填表单（密码不回显，留空 = 保留原值）
+function editAccount(id) {
+  var acc = state.accounts.find(function (a) { return a.id === id; });
+  if (!acc) return;
+  _editingAccountId = id;
+  document.getElementById('addAccountTitle').textContent = '编辑账号';
+  document.getElementById('accName').value = acc.name || '';
+  document.getElementById('accEmail').value = acc.email || '';
+  var email = String(acc.email || '').toLowerCase();
+  var provider = acc.provider || (email.endsWith('@claw.163.com') ? 'clawemail' : email.endsWith('@agent.qq.com') ? 'agentqq' : 'imap');
+  document.getElementById('accProvider').value = provider;
+  updateAccountFields();
+  var cfg = acc.config || {};
+  document.getElementById('accApiKey').value = acc.apiKey || '';
+  document.getElementById('accImapHost').value = cfg.imapHost || '';
+  document.getElementById('accImapPort').value = cfg.imapPort || '';
+  document.getElementById('accImapUser').value = cfg.imapUser || '';
+  document.getElementById('accImapPass').value = ''; // 不回显
+  document.getElementById('accSmtpHost').value = cfg.smtpHost || '';
+  document.getElementById('accSmtpPort').value = cfg.smtpPort || '';
+  document.getElementById('accSmtpUser').value = cfg.smtpUser || '';
+  document.getElementById('accSmtpPass').value = ''; // 不回显
+  var panel = document.getElementById('addAccountPanel');
+  if (panel && panel.scrollIntoView) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// 退出编辑模式（表单重置，回到"添加账号"）
+function resetAccountForm() {
+  _editingAccountId = null;
+  document.getElementById('addAccountTitle').textContent = '添加账号';
+  var form = document.getElementById('addAccountForm');
+  if (form && form.reset) form.reset();
+  updateAccountFields();
+}
 
 // 按 provider 切换可见的字段组
 window.updateAccountFields = function () {
@@ -1761,28 +1812,36 @@ window.updateAccountFields = function () {
     var provider = document.getElementById('accProvider').value;
     if (!name || !email) { toast('请填写名称和邮箱'); return; }
 
-    var payload = { action: 'create', name: name, email: email, provider: provider };
+    var payload = { action: _editingAccountId ? 'update' : 'create', name: name, email: email, provider: provider };
+    if (_editingAccountId) payload.id = _editingAccountId;
 
     // 按 provider 收集配置
     if (provider === 'clawemail' || provider === 'agentqq') {
-      payload.apiKey = document.getElementById('accApiKey').value || '';
+      // 编辑时空值 = 保留原凭据
+      var k = document.getElementById('accApiKey').value || '';
+      if (k) payload.apiKey = k;
     } else {
-      payload.config = {
+      var cfg = {
         imapHost: document.getElementById('accImapHost').value || '',
         imapPort: Number(document.getElementById('accImapPort').value) || 993,
         imapUser: document.getElementById('accImapUser').value || email,
-        imapPass: document.getElementById('accImapPass').value || '',
         smtpHost: document.getElementById('accSmtpHost').value || '',
         smtpPort: Number(document.getElementById('accSmtpPort').value) || 465,
-        smtpUser: document.getElementById('accSmtpUser').value || email,
-        smtpPass: document.getElementById('accSmtpPass').value || ''
+        smtpUser: document.getElementById('accSmtpUser').value || email
       };
+      // 密码仅在填写时更新（编辑时空值 = 保留原值）
+      var ip = document.getElementById('accImapPass').value;
+      var sp = document.getElementById('accSmtpPass').value;
+      if (ip) cfg.imapPass = ip;
+      if (sp) cfg.smtpPass = sp;
+      payload.config = cfg;
     }
 
     api('/accounts', { method: 'POST', body: JSON.stringify(payload) }).then(function (r) { return r.json(); }).then(function (d) {
       if (d && d.ok) {
-        toast('账号已保存');
-        form.reset(); updateAccountFields(); loadAccounts();
+        toast(_editingAccountId ? '账号已更新' : '账号已保存');
+        resetAccountForm();
+        loadAccounts();
       } else {
         toast('保存失败：' + (d && d.error ? d.error : '未知错误'));
       }
