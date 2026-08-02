@@ -88,6 +88,12 @@ let wsMonitorProc = null;
 let wsMonitorShutdown = false;
 const WS_PID_FILE = path.join(DATA_DIR, ".ws-monitor.pid");
 
+// IMAP 实时收件监听（IDLE）—— 与 ws-monitor 并列的第二个常驻监听进程
+const IMAP_IDLE_PATH = path.join(BACKEND_DIR, "imap-idle.mjs");
+let imapIdleProc = null;
+let imapIdleShutdown = false;
+const IMAP_IDLE_PID_FILE = path.join(DATA_DIR, ".imap-idle.pid");
+
 function writeWsPid(pid) {
   try { fs.writeFileSync(WS_PID_FILE, String(pid)); } catch {}
 }
@@ -152,6 +158,46 @@ function startWsMonitor(pluginDataDir) {
   }
 }
 
+// ── IMAP IDLE 实时收件监听（v0.1.6） ──
+function startImapIdle(pluginDataDir) {
+  if (imapIdleShutdown) return; // 已卸载，不再拉起
+  if (imapIdleProc) return; // 已在运行
+  try {
+    const env = { ...process.env };
+    if (pluginDataDir) env.HANAKO_PLUGIN_DATA = pluginDataDir;
+    const proc = spawn(process.execPath, [IMAP_IDLE_PATH], {
+      cwd: BACKEND_DIR,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: true,
+      env,
+    });
+    imapIdleProc = proc;
+    try { fs.writeFileSync(IMAP_IDLE_PID_FILE, String(proc.pid)); } catch {}
+    proc.stdout?.on("data", (d) => console.log("[imap-idle]", d.toString().trim()));
+    proc.stderr?.on("data", (d) => console.warn("[imap-idle]", d.toString().trim()));
+    proc.on("close", (code) => {
+      imapIdleProc = null;
+      try { fs.unlinkSync(IMAP_IDLE_PID_FILE); } catch {}
+      if (imapIdleShutdown) {
+        console.log("[imap-idle] 已随插件卸载退出，不再重启");
+        return;
+      }
+      console.warn(`[imap-idle] 退出: ${code}，10秒后重启...`);
+      setTimeout(startImapIdle, 10000);
+    });
+    proc.on("error", (e) => {
+      imapIdleProc = null;
+      try { fs.unlinkSync(IMAP_IDLE_PID_FILE); } catch {}
+      if (imapIdleShutdown) return;
+      console.warn("[imap-idle] 启动失败", { error: e.message });
+      setTimeout(startImapIdle, 30000);
+    });
+  } catch (e) {
+    console.warn("[imap-idle] 无法启动", { error: e.message });
+  }
+}
+
 export default class HanakoMailPlugin {
   async onload() {
     const ctx = this.ctx;
@@ -168,6 +214,10 @@ export default class HanakoMailPlugin {
     wsMonitorShutdown = false;
     const pluginDataDir = (ctx.dataDir && ctx.pluginId) ? path.join(ctx.dataDir, ctx.pluginId) : "";
     startWsMonitor(pluginDataDir);
+
+    // 启动 IMAP IDLE 实时收件监听（个人邮箱账号；ClawEmail 走上面的 WebSocket）
+    imapIdleShutdown = false;
+    startImapIdle(pluginDataDir);
   }
 
   async onunload() {
@@ -179,6 +229,12 @@ export default class HanakoMailPlugin {
       wsMonitorProc = null;
     }
     clearWsPid();
+    imapIdleShutdown = true;
+    if (imapIdleProc) {
+      killWsTree(imapIdleProc);
+      imapIdleProc = null;
+    }
+    try { fs.unlinkSync(IMAP_IDLE_PID_FILE); } catch {}
     // 关停常驻后端 worker（优雅退出：stdin.end + SIGTERM 兜底）
     try { shutdownWorker(); } catch (e) { ctx.log?.warn?.("worker shutdown failed", { error: e.message }); }
   }

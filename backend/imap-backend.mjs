@@ -20,8 +20,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TEMP_DIR = path.join(__dirname, "data", "_imap_tmp");
 
 // ── 解析 IMAP 配置 ────────────────────────────────────
+// getImapConfig 导出供 imap-idle.mjs（实时监听器）复用（含域名自动推断）。
 
-function getImapConfig(email) {
+export function getImapConfig(email) {
   const config = {
     user: process.env.IMAP_USER || email,
     password: process.env.IMAP_PASS || "",
@@ -103,7 +104,7 @@ function getSmtpConfig(email) {
 
 // ── IMAP 连接辅助 ─────────────────────────────────────
 
-function connectImap(config) {
+export function connectImap(config) {
   return new Promise((resolve, reject) => {
     const imap = new Imap(config);
     imap.once("ready", () => resolve(imap));
@@ -112,7 +113,7 @@ function connectImap(config) {
   });
 }
 
-function openBox(imap, boxName = "INBOX", readOnly = true) {
+export function openBox(imap, boxName = "INBOX", readOnly = true) {
   return new Promise((resolve, reject) => {
     imap.openBox(boxName, readOnly, (err, box) => {
       if (err) return reject(err);

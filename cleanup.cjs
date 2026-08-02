@@ -18,9 +18,13 @@ const { spawnSync } = require("node:child_process");
 
 const BACKEND_DIR = path.join(__dirname, "backend");
 const DATA_DIR = path.join(BACKEND_DIR, "data");
-const PID_FILES = [path.join(DATA_DIR, ".ws-monitor.pid"), path.join(DATA_DIR, ".worker.pid")];
+const PID_FILES = [
+  path.join(DATA_DIR, ".ws-monitor.pid"),
+  path.join(DATA_DIR, ".worker.pid"),
+  path.join(DATA_DIR, ".imap-idle.pid"),
+];
 // 需要清理的后台进程标记（命令行含这些片段即命中）
-const PROC_MARKERS = ["ws-monitor.mjs", "worker.mjs"];
+const PROC_MARKERS = ["ws-monitor.mjs", "worker.mjs", "imap-idle.mjs"];
 
 function log(msg) {
   console.log("[cleanup] " + msg);

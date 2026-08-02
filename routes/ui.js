@@ -1245,7 +1245,7 @@ export default function (app, ctx) {
         execFile(process.execPath, [toastScript, "--args-file", argsFile], {
           cwd: ctx.pluginDir,
           timeout: 20000,
-          env: { ...process.env, NODE_PATH: path.join(os.homedir(), ".workbuddy", "binaries", "node", "workspace", "node_modules") },
+          env: { ...process.env, NODE_PATH: path.join(BACKEND_DIR, "node_modules") },
         }, (err) => {
           try { fs.unlinkSync(argsFile); } catch {}
           if (err) console.warn("toast error:", err.message);
@@ -1286,8 +1286,11 @@ export default function (app, ctx) {
   app.post("/llm-test", postLlmTest);
 
   // ── 后台轮询新邮件 ──────────────────────────────────
-  const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 分钟
+  const POLL_INTERVAL_MS = 60 * 1000; // 60 秒（v0.1.6：原 5 分钟，提升新邮件感知速度）
+  const POLL_FETCH_LIMIT = 5;         // 对比最近 N 封，避免漏掉中间到达的多封
   const LAST_IDS_PATH = path.join(dataDir, "_poll_last_ids.json");
+  // 系统通知统一走 backend/node_modules（发布后用户安装依赖即可用，不再依赖本机 .workbuddy 路径）
+  const NOTIFY_NODE_PATH = path.join(BACKEND_DIR, "node_modules");
 
   function readLastIds() {
     try { return JSON.parse(fs.readFileSync(LAST_IDS_PATH, "utf-8")); } catch { return {}; }
@@ -1295,6 +1298,28 @@ export default function (app, ctx) {
   function writeLastIds(obj) {
     ensureDir();
     fs.writeFileSync(LAST_IDS_PATH, JSON.stringify(obj), "utf-8");
+  }
+
+  // 发送桌面通知（复用 helper/mail-toast.cjs）
+  function notifyMail(subject, sender, messageId, accountId) {
+    const toastScript = path.join(ctx.pluginDir, "helper", "mail-toast.cjs");
+    if (!fs.existsSync(toastScript)) return;
+    try {
+      const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      const argsFile = path.join(os.tmpdir(), `hanako-mail-notify-${id}.json`);
+      fs.writeFileSync(argsFile, JSON.stringify({ subject, sender, messageId, accountId }), "utf-8");
+      execFile(process.execPath, [toastScript, "--args-file", argsFile], {
+        cwd: ctx.pluginDir,
+        timeout: 20000,
+        windowsHide: true,
+        env: { ...process.env, NODE_PATH: NOTIFY_NODE_PATH },
+      }, (err) => {
+        try { fs.unlinkSync(argsFile); } catch {}
+        if (err) console.warn("toast error:", err.message);
+      });
+    } catch (e) {
+      console.warn("toast failed:", e.message);
+    }
   }
 
   async function pollAccounts() {
@@ -1305,45 +1330,35 @@ export default function (app, ctx) {
 
     for (const account of list) {
       try {
-        const result = await runInbox(["list", account.email, "--fid=INBOX", "--limit=1"], inboxEnvFor(account));
+        const result = await runInbox(["list", account.email, "--fid=INBOX", `--limit=${POLL_FETCH_LIMIT}`], inboxEnvFor(account));
         const messages = Array.isArray(result) ? result : [];
         if (!messages.length) continue;
-        const top = messages[0];
         const key = `${account.id}:INBOX`;
         const prev = lastIds[key];
+        const known = Array.isArray(prev) ? prev : (prev ? [prev] : []);
+        const currentIds = messages.map((m) => String(m.id));
+        const fresh = currentIds.filter((id) => !known.includes(id));
 
-        if (prev && top.id !== prev) {
-          // 新邮件：发桌面通知
-          const subject = top.subject || "(无主题)";
-          const sender = top.from || "";
-          const messageId = top.id;
-          const accountId = account.id;
+        if (fresh.length) {
+          // 新邮件 → 写缓存（前端列表刷新即可见，解决「刷新也没用」）
+          try {
+            const cacheFile = path.join(cacheDir, `messages-${account.id}-INBOX.json`);
+            const cached = readJson(cacheFile, []);
+            const byId = new Map((Array.isArray(cached) ? cached : []).map((m) => [String(m.id), m]));
+            for (const m of messages) byId.set(String(m.id), m);
+            const merged = Array.from(byId.values()).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+            writeJson(cacheFile, merged.slice(0, 50));
+          } catch {}
 
-          const toastScript = path.join(ctx.pluginDir, "helper", "mail-toast.cjs");
-          if (fs.existsSync(toastScript)) {
-            try {
-              const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-              const argsFile = path.join(os.tmpdir(), `hanako-mail-notify-${id}.json`);
-              fs.writeFileSync(argsFile, JSON.stringify({ subject, sender, messageId, accountId }), "utf-8");
-              execFile(process.execPath, [toastScript, "--args-file", argsFile], {
-                cwd: ctx.pluginDir,
-                timeout: 20000,
-                windowsHide: true,
-                env: { ...process.env, NODE_PATH: path.join(os.homedir(), ".workbuddy", "binaries", "node", "workspace", "node_modules") },
-              }, (err) => {
-                try { fs.unlinkSync(argsFile); } catch {}
-                if (err) console.warn("toast error:", err.message);
-              });
-            } catch (e) {
-              console.warn("toast failed:", e.message);
-            }
+          // 逐封弹系统通知
+          for (const m of messages) {
+            if (known.includes(String(m.id))) continue;
+            notifyMail(m.subject || "(无主题)", m.from || "", m.id, account.id);
           }
         }
 
-        if (top.id) {
-          lastIds[key] = top.id;
-          changed = true;
-        }
+        lastIds[key] = currentIds.slice(0, POLL_FETCH_LIMIT);
+        changed = true;
       } catch (e) {
         // 单账号轮询失败不影响其他账号
         console.warn(`hanako-mail poll fail: ${account.email}: ${e.message}`);

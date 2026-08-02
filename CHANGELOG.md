@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.6] — 2026-08-02
+
+### 功能：实时收件 + 系统通知（论坛反馈落地）
+- **IMAP IDLE 实时监听**（新增 `backend/imap-idle.mjs`）：为个人邮箱（IMAP 后端）账号建立 IDLE 长连接，服务器有新邮件立即推送 → 拉取解析 → 写缓存（与 ws-monitor 同格式，前端列表自动合并）+ 弹系统通知。断线 30s 自动重连；服务器不支持 IDLE 时自动降级为 2 分钟周期检查。ClawEmail 仍走原有 WebSocket（ws-monitor）。
+- **生命周期**：`index.js` onload 启动 / onunload 关停 imap-idle（pid 文件 `.imap-idle.pid`）；`cleanup.cjs` 同步扫描清理。
+- **轮询增强**（routes/ui.js）：5 分钟 → 60 秒；对比最近 5 封（不再漏中间邮件）；**新邮件写入本地缓存**——前端列表刷新即可见（解决「刷新也没用」）。
+- **前端自动刷新**：列表页检测到新邮件时自动重新加载（无需手动刷新）。
+- **系统通知链路修复**（helper/mail-toast.cjs）：
+  1. SnoreToast 参数 `-title/-message` → 正确的 `-t/-m`（此前参数名错误导致原生 toast 永远失败降级）；
+  2. 退出码判定：SnoreToast 的 1(Hidden)/2(Dismissed)/3(TimedOut) 均表示通知已展示，此前被 execFile 误判为失败；
+  3. AppID 未注册时自动 `-install` 注册（自定义 AUMID 弹 toast 的前提）后重试；
+  4. 点击回调（-click）尽力而为，不可用时降级为纯通知——**通知必达**。
+- **通知依赖路径修复**：`mail-toast.cjs` 的 node-notifier 查找、routes/ws-monitor 的 NODE_PATH 从本机 `.workbuddy` 路径改为 `backend/node_modules`（发布后用户 `npm install` 即可弹通知，不再依赖开发机）。
+- imap-backend 导出 `getImapConfig/connectImap/openBox` 供 IDLE 监听器复用。
+
 ## [0.1.5] — 2026-08-02
 
 ### 功能新增

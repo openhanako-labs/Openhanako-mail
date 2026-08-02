@@ -40,7 +40,11 @@ const clickFile = path.join(os.tmpdir(), "hanako-mail-click.json");
 // 查找 node-notifier 模块路径
 function findNodeNotifier() {
   const candidates = [
+    // 1) 本插件后端依赖（发布后用户 cd backend && npm install 即有）
+    path.join(__dirname, "..", "backend", "node_modules", "node-notifier"),
+    // 2) 仓库根依赖（开发环境）
     path.join(__dirname, "..", "node_modules", "node-notifier"),
+    // 3) 兜底：WorkBuddy 内置 node workspace（开发机专用，发布环境不依赖）
     path.join(os.homedir(), ".workbuddy", "binaries", "node", "workspace", "node_modules", "node-notifier"),
   ];
   for (const dir of candidates) {
@@ -75,7 +79,21 @@ else {
 }
 
 // ── 方法 1: SnoreToast（原生 Windows Toast + 点击回调） ──
-function tryNotifyViaSnoreToast() {
+// AppID 注册：Windows 用自定义 AUMID 弹 toast 前必须先 -install 注册
+// （创建开始菜单快捷方式 + 注册表 AUMID）。首次失败时自动注册并重试一次（v0.1.6）。
+let _appIdRegistered = false;
+function registerAppId(cb) {
+  if (_appIdRegistered) return cb(true);
+  const { execFile } = require("child_process");
+  execFile(snoreExe, ["-install", "Hanako Mail", process.execPath, "Hanako.Mail"], {
+    windowsHide: true, timeout: 15000,
+  }, (e) => {
+    _appIdRegistered = true; // 无论成败只尝试一次，避免每次通知都 install
+    cb(!e);
+  });
+}
+
+function tryNotifyViaSnoreToast(retried) {
   // 修复：原先把 messageId/sender 直接插值进 .cmd 批处理脚本，
   // 1) SnoreToast 派生的 cmd 窗口可见，弹窗消失/点击时会闪一下控制台；
   // 2) messageId 含 < > & | % 等元字符会导致 cmd 语法错误（红字一闪）。
@@ -85,27 +103,42 @@ function tryNotifyViaSnoreToast() {
   fs.writeFileSync(sidecar, JSON.stringify({ toastId, messageId, accountId }), "utf-8");
 
   const vbs = path.join(__dirname, "click.vbs");
-  // wscript 在 PATH 中，无需带空格的 exe 路径，减少对 SnoreToast 命令行解析的干扰
   const clickCmd = `wscript.exe "${vbs}" "${sidecar}" "${clickFile}"`;
 
   const { execFile } = require("child_process");
-  execFile(snoreExe, [
-    "-title", "Hanako Mail",
-    "-message", `新邮件：${subject}`,
-    "-appID", "Hanako.Mail",
-    "-pipeName", `hanako-mail-${toastId}`,
-    "-click", clickCmd,
-    "-close", clickCmd,
-  ], { timeout: 15000, windowsHide: true }, (err) => {
+  // SnoreToast 退出码：0=Success 1=Hidden 2=Dismissed 3=TimedOut（后三者均表示通知已展示，
+  // 只是无人点击/超时消失），仅 -1=Failed 是真失败。execFile 把所有非 0 当 error，
+  // 必须显式放行 0/1/2/3（v0.1.6 修复：此前把「已弹出但超时消失」误判为失败并降级）。
+  const TOAST_OK_CODES = [0, 1, 2, 3];
+  const baseArgs = ["-t", "Hanako Mail", "-m", `新邮件：${subject}`, "-appID", "Hanako.Mail", "-pipeName", `hanako-mail-${toastId}`];
+  // 点击回调（点击通知打开邮件详情）：尽力而为，失败时降级为纯通知（通知本身必须弹出）
+  const withClickArgs = [...baseArgs, "-click", clickCmd, "-close", clickCmd];
+  const plainArgs = [...baseArgs, "-silent"];
+
+  function fire(args, onFail) {
+    execFile(snoreExe, args, { timeout: 15000, windowsHide: true }, (err) => {
+      if (!err || TOAST_OK_CODES.includes(err.code)) process.exit(0); // 通知已展示
+      onFail(err);
+    });
+  }
+
+  fire(withClickArgs, function (err) {
     try { fs.unlinkSync(sidecar); } catch {}
-    if (err) {
-      console.error("mail-toast: SnoreToast failed, trying node-notifier:", err.message);
-      // 不在回调里立即 process.exit，交给兜底逻辑自行退出，避免打断 node-notifier
+    if (!retried && !_appIdRegistered) {
+      // AppID 未注册是自定义 AUMID toast 失败的常见原因：注册后重试一次
+      registerAppId(function () {
+        console.error("mail-toast: SnoreToast 失败，已尝试注册 AppID 后重试:", err.message);
+        tryNotifyViaSnoreToast(true);
+      });
+      return;
+    }
+    // 点击回调不可用 → 降级为纯通知（不传 -click/-close，保证系统通知必达）
+    console.error("mail-toast: 点击回调不可用，降级为纯通知:", err.message);
+    fire(plainArgs, function (err2) {
+      console.error("mail-toast: SnoreToast failed, trying node-notifier:", err2.message);
       if (notifierDir) tryNotifyViaNodeNotifier();
       else process.exit(1);
-    } else {
-      process.exit(0);
-    }
+    });
   });
   // 超时兜底（留出 node-notifier 兜底的余量）
   setTimeout(() => process.exit(0), 15000);

@@ -87,7 +87,7 @@ function notifyDesktop(subject, sender, messageId, accountId) {
     execFile(process.execPath, [toastScript, "--args-file", argsFile], {
       cwd: path.join(__dirname, ".."),
       windowsHide: true,
-      env: { ...process.env, NODE_PATH: path.join(os.homedir(), ".workbuddy", "binaries", "node", "workspace", "node_modules") },
+      env: { ...process.env, NODE_PATH: path.join(__dirname, "node_modules") },
     }, (err) => {
       try { fs.unlinkSync(argsFile); } catch {}
       if (err) log("WARN", "桌面通知失败", { err: err.message });
