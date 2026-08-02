@@ -1,14 +1,14 @@
 {
-  "name": "email-monitor",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+  "name": "hanako-mail-backend",
+  "version": "0.1.5",
+  "description": "Hanako Mail 插件后端引擎：IMAP/SMTP + ClawEmail + AgentQQ，含常驻 worker 与连接池。",
+  "private": true,
+  "license": "AGPL-3.0",
+  "author": "OpenHanako Labs <https://github.com/openhanako-labs>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/openhanako-labs/Openhanako-mail.git"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "type": "commonjs",
   "dependencies": {
     "@clawemail/mail-cli": "^0.2.4",

@@ -23,6 +23,11 @@ namespace MailToastHelper;
 internal static class Program
 {
     private static string? s_clickDir;
+    // 临时目录统一走系统 Temp（原硬编码本机用户 Temp 绝对路径，不可移植，已移除）
+    private static readonly string s_tempDir = Path.GetTempPath();
+    private static readonly string s_logPath = Path.Combine(s_tempDir, "hanako-helper.log");
+    private static readonly string s_errPath = Path.Combine(s_tempDir, "hanako-helper-error.txt");
+    private static readonly string s_fontsPath = Path.Combine(s_tempDir, "hanako-fonts.txt");
 
     [STAThread]
     private static void Main(string[] args)
@@ -36,7 +41,7 @@ internal static class Program
         if (Array.IndexOf(args, "--dump-fonts") >= 0) { DumpFonts(); return; }
 
         // 调试日志
-        try { File.AppendAllText(@"C:\Users\USERNAME\AppData\Local\Temp\hanako-helper.log",
+        try { File.AppendAllText(s_logPath,
             $"[{DateTime.Now:HH:mm:ss}] Started with args: {string.Join(" ", args)}\n"); } catch { }
 
         string? portStr = null;
@@ -125,7 +130,7 @@ internal static class Program
             catch (Exception ex)
             {
                 Log($"Oneshot failed: {ex.Message}\n{ex.StackTrace}");
-                try { File.WriteAllText(@"C:\Users\USERNAME\AppData\Local\Temp\hanako-helper-error.txt", ex.ToString()); } catch { }
+                try { File.WriteAllText(s_errPath, ex.ToString()); } catch { }
             }
             return;
         }
@@ -147,7 +152,7 @@ internal static class Program
 
     private static void Log(string msg)
     {
-        try { File.AppendAllText(@"C:\Users\USERNAME\AppData\Local\Temp\hanako-helper.log", $"[{DateTime.Now:HH:mm:ss}] {msg}\n"); }
+        try { File.AppendAllText(s_logPath, $"[{DateTime.Now:HH:mm:ss}] {msg}\n"); }
         catch { }
     }
 
@@ -236,6 +241,6 @@ internal static class Program
             var b = f.IsStyleAvailable(FontStyle.Bold) ? "B" : "";
             sb.AppendLine($"{r}{b} {f.Name}");
         }
-        File.WriteAllText(@"C:\Users\USERNAME\AppData\Local\Temp\hanako-fonts.txt", sb.ToString());
+        File.WriteAllText(s_fontsPath, sb.ToString());
     }
 }

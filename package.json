@@ -3,5 +3,15 @@
   "version": "0.1.5",
   "private": true,
   "type": "module",
-  "description": "Hana 原生多邮箱聚合插件：IMAP/SMTP + 官方 API，支持多账号、文件夹、已读未读、回复。"
+  "description": "HanaAgent 原生多邮箱聚合插件：IMAP/SMTP + ClawEmail + AgentQQ，支持多账号、文件夹、已读未读、回复、搜索、批量操作与草稿。",
+  "license": "AGPL-3.0",
+  "author": "OpenHanako Labs <https://github.com/openhanako-labs>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/openhanako-labs/Openhanako-mail.git"
+  },
+  "bugs": {
+    "url": "https://github.com/openhanako-labs/Openhanako-mail/issues"
+  },
+  "homepage": "https://github.com/openhanako-labs/Openhanako-mail"
 }

@@ -37,6 +37,27 @@ Hanako Mail 插件
 cd backend && npm install
 ```
 
+> 环境变量兜底模板见 `backend/.env.example`（复制为 `backend/.env` 后按需填写；`.env` 已被 .gitignore 忽略）。账号凭据优先通过插件 UI 配置（加密存储），仅当未配置时回退读取环境变量。
+
+### 权限说明（manifest）
+
+插件声明 `trust: full-access` 并请求以下宿主能力，用途如下：
+
+| 能力 | 用途 |
+|---|---|
+| `resource.read` / `resource.write` | 读写插件数据目录（`accounts.json` 加密凭据、邮件缓存、黑名单） |
+| `external.open` | 点击邮件/附件时在系统浏览器/默认应用打开外链与下载文件 |
+| `clipboard.writeText` | 写信页「复制」操作（如复制收件人地址） |
+
+### 桌面通知助手（可选构建）
+
+原生桌面通知依赖 `helper/bin/mail-toast-helper.exe`（.NET 8 WinForms，源码在 `helper/MailToastHelper/`）。仓库**不随附预编译 exe**；未提供时自动降级为 `helper/mail-toast.cjs`（node-notifier 方案），功能可用。如需原生弹窗：
+
+```bash
+cd helper/MailToastHelper
+dotnet publish -c Release -r win-x64 -o ../../helper/bin
+```
+
 ## 账号配置
 
 支持三种邮箱类型：
