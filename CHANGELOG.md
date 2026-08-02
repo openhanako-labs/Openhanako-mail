@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.3] — 2026-08-02
+
+### 性能重构：常驻 Worker 后端
+- **新增 `backend/worker.mjs`**：常驻进程，经 stdin/stdout JSON-RPC 接收命令，复用 `inbox.mjs` 的 `COMMANDS` / `parseOptions` 命令表执行（与 CLI 行为一致）。日志走 stderr，stdout 只承载协议。
+- **新增 `backend/worker-client.mjs`**：宿主侧客户端，模块级单例。懒启动（首个请求时 spawn）、等待就绪信号后放行、按 id 匹配响应支持并发、请求超时（默认 90s）、崩溃指数退避自动重启、`shutdownWorker()` 优雅关闭。
+- **routes/ui.js 与 tools/folders|messages|send|sync.js**：`runInbox` 从「每次 execFile 冷启 node 子进程」改为 `workerClient.runCli` IPC 调用——**调用点与 CLI 参数格式完全不变**，行为等价。
+- **并发安全**：每个请求前注入该账号凭据 env + `inbox.resetAccountCache()`；env 应用与命令入口同步段在 Node 单线程内原子完成，不同账号并发请求不会互相污染。
+- **生命周期**：`index.js onunload` 关停 worker；`cleanup.cjs` 同时扫描/清理 `worker.mjs` 进程（pid 文件 `.worker.pid`）。
+- `inbox.mjs` 新增导出：`COMMANDS` / `parseOptions`（供 worker 复用）、`resetAccountCache()`（清账号配置缓存）。
+- 收益：消除每次请求的 node 冷启动 + 模块加载（约 400–600ms/请求），列表/摘要补抓等并发场景提速明显；ClawEmail 的 5s 列表缓存与 client 连接池在常驻进程内真正生效。
+
 ## [0.1.2] — 2026-08-02
 
 ### 移除（半成品清理）

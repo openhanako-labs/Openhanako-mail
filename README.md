@@ -11,7 +11,9 @@ Hanako Mail 插件
 ├── tools/          Agent 工具（账号管理/文件夹/邮件列表/发送/同步）
 ├── routes/         HTTP 路由（邮件 UI API）
 ├── backend/        后端引擎
-│   ├── inbox.mjs           统一入口（CLI + 模块）
+│   ├── inbox.mjs           统一入口（模块 + CLI 命令表）
+│   ├── worker.mjs          常驻 Worker：stdin/stdout JSON-RPC，复用 inbox 命令表执行
+│   ├── worker-client.mjs   宿主侧 Worker 客户端（懒启动/并发/崩溃自愈）
 │   ├── clawemail-backend   ClawEmail SDK 后端
 │   ├── agentqq-backend     AgentQQ agently-cli 后端
 │   ├── imap-backend        IMAP/SMTP 个人邮箱后端
@@ -22,6 +24,8 @@ Hanako Mail 插件
 ├── assets/         前端资源
 └── manifest.json   插件清单
 ```
+
+> **执行模型**：routes/tools 的所有后端命令（列表/读信/发送/同步/搜索/附件等）不再每次冷启 node 子进程，而是经 `worker-client` 发给**常驻 worker**（首次使用时自动启动、崩溃自动重启、插件卸载时关闭）。worker 复用 `inbox.mjs` 的命令表，行为与 CLI 完全一致；每次请求注入该账号的凭据环境变量并重置账号缓存，不同账号并发请求安全。
 
 ## 安装
 
@@ -142,12 +146,12 @@ for f in backend/*.mjs routes/ui.js tools/*.js helper/*.cjs index.js; do node --
 
 ## 卸载与清理
 
-插件运行时会启动一个常驻后台进程 `ws-monitor.mjs`（实时收件监听），它会占用 `backend/` 目录内的文件。正常情况下**卸载插件时会自动终止该进程**，无需手动干预。
+插件运行时会启动两个常驻后台进程：`ws-monitor.mjs`（ClawEmail 实时收件监听）与 `worker.mjs`（后端执行 Worker）。它们会占用 `backend/` 目录内的文件。正常情况下**卸载插件时会自动终止**（index.js onunload 关停 ws-monitor 与 worker），无需手动干预。
 
 若遇到「删除失败 / 文件被占用」等异常（如 IDE 异常退出导致进程残留），运行清理脚本即可释放占用：
 
 ```bash
-node cleanup.cjs            # 终止残留的后台进程，释放文件锁
+node cleanup.cjs            # 终止残留的后台进程（ws-monitor / worker），释放文件锁
 node cleanup.cjs --delete   # 同上，并额外删除 backend/ 目录残留
 ```
 

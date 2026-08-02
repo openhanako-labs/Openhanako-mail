@@ -1,6 +1,6 @@
 {
   "name": "hanako-mail",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "type": "module",
   "description": "Hana 原生多邮箱聚合插件：IMAP/SMTP + 官方 API，支持多账号、文件夹、已读未读、回复。"

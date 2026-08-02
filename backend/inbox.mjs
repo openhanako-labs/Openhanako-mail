@@ -96,6 +96,15 @@ function getAccount(email) {
   return config;
 }
 
+/**
+ * 清空账号配置缓存。
+ * 常驻 worker 场景：每次请求的凭据经 process.env 注入，账号配置可能变化
+ * （编辑凭据/切换账号），处理每个请求前应调用一次，避免拿到旧配置。
+ */
+export function resetAccountCache() {
+  accountCache.clear();
+}
+
 // ── 统一 API ───────────────────────────────────────────
 
 export async function listMessages(accountEmail, options = {}) {
@@ -405,8 +414,11 @@ export async function listFolders(accountEmail) {
 }
 
 // ── CLI 入口 ────────────────────────────────────────────
+// COMMANDS / parseOptions 同时供常驻 worker（worker.mjs）复用：
+// 宿主侧不再每次冷启 node 子进程，而是经 stdin/stdout JSON-RPC 把
+// CLI 风格参数发给常驻 worker，worker 用同一张命令表执行。
 
-const COMMANDS = {
+export const COMMANDS = {
   list: async ([email, ...rest]) => {
     const opts = parseOptions(rest);
     return await listMessages(email, opts);
@@ -459,7 +471,7 @@ const COMMANDS = {
   },
 };
 
-function parseOptions(args) {
+export function parseOptions(args) {
   const opts = {};
   let jsonFile = null;
   for (const arg of args) {

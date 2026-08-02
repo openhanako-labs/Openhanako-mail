@@ -1,30 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { execFile } from "node:child_process";
 import { normalizeFolder, defaultFolders, inboxEnvFor } from "../backend/common.mjs";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const BACKEND_DIR = path.join(__dirname, "..", "backend");
-const INBOX_PATH = path.join(BACKEND_DIR, "inbox.mjs");
+// 常驻 worker IPC（v0.1.3 起替代每次冷启 node 子进程跑 inbox.mjs）
+import * as workerClient from "../backend/worker-client.mjs";
 
 async function runInbox(args, extraEnv = {}) {
-  return new Promise((resolve, reject) => {
-    const proc = execFile(process.execPath, [INBOX_PATH, ...args], {
-      cwd: BACKEND_DIR,
-      encoding: "utf-8",
-      windowsHide: true,
-      maxBuffer: 50 * 1024 * 1024,
-      env: { ...process.env, ...extraEnv },
-    }, (err, stdout, stderr) => {
-      if (err) return reject(new Error(`${err.message}: ${stderr}`));
-      try {
-        resolve(JSON.parse(stdout));
-      } catch (e) {
-        reject(new Error(`JSON parse failed: ${stdout.slice(0, 200)}`));
-      }
-    });
-  });
+  return await workerClient.runCli(args[0], args.slice(1), extraEnv);
 }
 
 export const name = "mail_folders";

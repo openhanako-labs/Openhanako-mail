@@ -18,21 +18,23 @@ const { spawnSync } = require("node:child_process");
 
 const BACKEND_DIR = path.join(__dirname, "backend");
 const DATA_DIR = path.join(BACKEND_DIR, "data");
-const PID_FILE = path.join(DATA_DIR, ".ws-monitor.pid");
+const PID_FILES = [path.join(DATA_DIR, ".ws-monitor.pid"), path.join(DATA_DIR, ".worker.pid")];
+// 需要清理的后台进程标记（命令行含这些片段即命中）
+const PROC_MARKERS = ["ws-monitor.mjs", "worker.mjs"];
 
 function log(msg) {
   console.log("[cleanup] " + msg);
 }
 
-// 跨平台查找命令行含 ws-monitor 的 node 进程 pid
-function findWsMonitorPids() {
+// 跨平台查找命令行含标记（ws-monitor / worker）的 node 进程 pid
+function findProcPids() {
   const pids = new Set();
   try {
     if (process.platform === "win32") {
       const out = spawnSync("wmic", ["process", "where", "name='node.exe'", "get", "processid,commandline", "/format:csv"], { encoding: "utf8", windowsHide: true });
       const lines = (out.stdout || "").split(/\r?\n/);
       for (const line of lines) {
-        if (line.includes("ws-monitor.mjs")) {
+        if (PROC_MARKERS.some((m) => line.includes(m))) {
           const cols = line.split(",");
           const pid = cols[cols.length - 1]?.trim();
           if (pid && /^\d+$/.test(pid)) pids.add(pid);
@@ -42,7 +44,7 @@ function findWsMonitorPids() {
       const out = spawnSync("ps", ["-eo", "pid,args"], { encoding: "utf8" });
       const lines = (out.stdout || "").split(/\r?\n/);
       for (const line of lines) {
-        if (line.includes("ws-monitor.mjs")) {
+        if (PROC_MARKERS.some((m) => line.includes(m))) {
           const pid = line.trim().split(/\s+/)[0];
           if (pid && /^\d+$/.test(pid)) pids.add(pid);
         }
@@ -67,22 +69,24 @@ function killPid(pid) {
   }
 }
 
-// 1) 按 pid 文件杀
+// 1) 按 pid 文件杀（ws-monitor + worker）
 let killedByPidFile = false;
-if (fs.existsSync(PID_FILE)) {
-  const pid = fs.readFileSync(PID_FILE, "utf8").trim();
-  if (pid && /^\d+$/.test(pid)) {
-    log("发现 pid 文件，终止占用进程 " + pid);
-    killPid(pid);
-    killedByPidFile = true;
+for (const PID_FILE of PID_FILES) {
+  if (fs.existsSync(PID_FILE)) {
+    const pid = fs.readFileSync(PID_FILE, "utf8").trim();
+    if (pid && /^\d+$/.test(pid)) {
+      log("发现 pid 文件，终止占用进程 " + pid);
+      killPid(pid);
+      killedByPidFile = true;
+    }
+    try { fs.unlinkSync(PID_FILE); } catch {}
   }
-  try { fs.unlinkSync(PID_FILE); } catch {}
 }
 
-// 2) 兜底：扫描所有 node 进程，杀掉命令行含 ws-monitor.mjs 的
-const pids = findWsMonitorPids();
+// 2) 兜底：扫描所有 node 进程，杀掉命令行含 ws-monitor.mjs / worker.mjs 的
+const pids = findProcPids();
 if (pids.length === 0 && !killedByPidFile) {
-  log("未发现残留的 ws-monitor 进程，无需清理");
+  log("未发现残留的后台进程（ws-monitor / worker），无需清理");
 } else {
   for (const pid of pids) killPid(pid);
   log("后台进程已清理，现在可以正常删除插件了");

@@ -14,6 +14,8 @@ import {
   encryptSensitiveFields,
   decryptSensitiveFields,
 } from "../backend/cred-crypto.mjs";
+// 常驻 worker IPC：替代「每次 API 调用冷启 node 子进程跑 inbox.mjs」
+import * as workerClient from "../backend/worker-client.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -55,25 +57,12 @@ function _defaultFoldersFallback(accountId) {
 const PROXY_FETCH_SCRIPT = path.join(__dirname, "..", "assets", "_proxy-fetch.cjs");
 const PLUGIN_ROOT = path.resolve(__dirname, "..");
 const BACKEND_DIR = path.join(PLUGIN_ROOT, "backend");
-const INBOX_PATH = path.join(BACKEND_DIR, "inbox.mjs");
 
+// 执行后端命令：常驻 worker IPC（v0.1.3 起替代每次冷启 node 子进程）。
+// 参数语义与旧 execFile 版 runInbox 完全一致（CLI 风格 args + 账号凭据 env），
+// 成功 resolve 解析后的数据，失败 reject Error。
 async function runInbox(args, extraEnv = {}) {
-  return new Promise((resolve, reject) => {
-    const proc = execFile(process.execPath, [INBOX_PATH, ...args], {
-      cwd: BACKEND_DIR,
-      encoding: "utf-8",
-      windowsHide: true,
-      maxBuffer: 50 * 1024 * 1024,
-      env: { ...process.env, ...extraEnv },
-    }, (err, stdout, stderr) => {
-      if (err) return reject(new Error(`${err.message}: ${stderr}`));
-      try {
-        resolve(JSON.parse(stdout));
-      } catch (e) {
-        reject(new Error(`JSON parse failed: ${stdout.slice(0, 200)}`));
-      }
-    });
-  });
+  return await workerClient.runCli(args[0], args.slice(1), extraEnv);
 }
 
 function resolveAccount(accountsList, accountId) {

@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile, spawn } from "node:child_process";
+// 常驻后端 worker 的宿主侧客户端（与 routes/tools 共享同一模块单例）
+import { shutdownWorker } from "./backend/worker-client.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BACKEND_DIR = path.join(__dirname, "backend");
@@ -177,5 +179,7 @@ export default class HanakoMailPlugin {
       wsMonitorProc = null;
     }
     clearWsPid();
+    // 关停常驻后端 worker（优雅退出：stdin.end + SIGTERM 兜底）
+    try { shutdownWorker(); } catch (e) { ctx.log?.warn?.("worker shutdown failed", { error: e.message }); }
   }
 }
