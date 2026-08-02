@@ -13,6 +13,10 @@
 // 通过环境变量拿到解析后的配置即可。
 // ─────────────────────────────────────────────────────────────
 
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
+
 function normalizeApi(api) {
   const value = String(api || "openai-completions").toLowerCase();
   if (value.startsWith("anthropic")) return "anthropic-messages";
@@ -76,24 +80,70 @@ export function selectChatModel(providers, requestedProviderId, requestedModel) 
 }
 
 /**
- * 向宿主请求某供应商的凭据（baseUrl + apiKey）。
+ * 读取 HanaAgent 全局供应商目录（~/.hanako/provider-catalog.json，v0.1.9）。
+ * 这是用户「已添加的供应商」的真实数据源（含 base_url / api_key / models / api 协议），
+ * 表情包等官方生态插件即直接读此文件。进程内缓存。
+ * ⚠️ api_key 为明文，仅服务端使用，禁止返回前端。
+ */
+let _catalogCache = null;
+export function getProviderCatalog() {
+  if (_catalogCache) return _catalogCache;
+  try {
+    const raw = fs.readFileSync(path.join(os.homedir(), ".hanako", "provider-catalog.json"), "utf-8");
+    const parsed = JSON.parse(raw);
+    _catalogCache = (parsed && typeof parsed.providers === "object") ? parsed.providers : {};
+  } catch {
+    _catalogCache = {};
+  }
+  return _catalogCache;
+}
+export function clearProviderCatalogCache() {
+  _catalogCache = null;
+}
+
+/** 大小写不敏感地在 catalog 里找 provider（key 可能是中文别名/英文 id）。 */
+function findCatalogProvider(providerId) {
+  const catalog = getProviderCatalog();
+  if (!providerId) return null;
+  if (catalog[providerId]) return { id: providerId, ...catalog[providerId] };
+  const lower = String(providerId).toLowerCase();
+  for (const [pid, p] of Object.entries(catalog)) {
+    if (pid.toLowerCase() === lower) return { id: pid, ...p };
+  }
+  return null;
+}
+
+/**
+ * 解析某供应商的真实凭据（baseUrl + apiKey + api 协议）。
+ * 优先走宿主 bus `provider:credentials`；失败时兜底直接读 provider-catalog.json
+ * （与表情包等官方插件一致，解决「provider:credentials 拿不到」的问题）。
  */
 export async function getProviderCredentials(ctx, providerId) {
-  if (!ctx?.bus?.request) return { ok: false, error: "hana_bus_unavailable" };
-  try {
-    const credentials = await ctx.bus.request("provider:credentials", { providerId });
-    if (credentials?.error || !credentials?.apiKey || !credentials?.baseUrl) {
-      return { ok: false, error: credentials?.error || "provider_credentials_missing" };
-    }
+  // 1) 宿主 bus
+  if (ctx?.bus?.request) {
+    try {
+      const credentials = await ctx.bus.request("provider:credentials", { providerId });
+      if (credentials && !credentials.error && credentials.apiKey && credentials.baseUrl) {
+        return {
+          ok: true,
+          baseUrl: credentials.baseUrl,
+          apiKey: credentials.apiKey,
+          api: normalizeApi(credentials.api),
+        };
+      }
+    } catch { /* 落到兜底 */ }
+  }
+  // 2) 兜底：provider-catalog.json（用户已添加的供应商真实配置）
+  const p = findCatalogProvider(providerId);
+  if (p && p.base_url && p.api_key) {
     return {
       ok: true,
-      baseUrl: credentials.baseUrl,
-      apiKey: credentials.apiKey,
-      api: normalizeApi(credentials.api),
+      baseUrl: p.base_url,
+      apiKey: p.api_key,
+      api: normalizeApi(p.api),
     };
-  } catch (error) {
-    return { ok: false, error: "provider_credentials_failed", detail: error.message };
   }
+  return { ok: false, error: "provider_credentials_missing" };
 }
 
 /**

@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.9] — 2026-08-02
+
+### 修复：LLM 凭据读取改为 provider-catalog.json（与官方生态插件一致）
+- **根因**：此前走宿主 `provider:credentials` bus 接口，但该接口在本机拿不到 agnes 等供应商的 baseUrl/apiKey，导致「测试连接」报 `LLM 未配置`（baseUrl 为空）。表情包等官方插件是**直接读 `~/.hanako/provider-catalog.json`**（HanaAgent 全局供应商目录：base_url/api_key/models/api 协议）。
+- **`backend/hana-llm.mjs`**：新增 `getProviderCatalog()`（读并缓存 provider-catalog.json，含大小写不敏感匹配）；`getProviderCredentials` 改为「宿主 bus 优先 + catalog 兜底」，正确识别 `api` 协议（anthropic-messages 如 minimax / 讯飞 coding plan）。
+- **`postLlmDetect`**：改读 provider-catalog.json，只输出「已配 Key 且 base_url 非空」的供应商下的模型（catalog 有 models 用 catalog；无则用宿主 models-by-type 补充），并做 provider+model 去重。本机实测：25 个 catalog 供应商 → 6 组 / 9 项（agnes 只 1 个 agnes-2.5-flash，不再 7 个重复）。
+- 前端下拉无需改动。
+
+## [0.1.8] — 2026-08-02
+
+### 修复：前端下拉防御性去重
+- `renderLlmDropdown` 分组前按 provider+model 去重（HanaAgent `provider:models-by-type` 返回的模型数组可能重复）。
+
 ## [0.1.7] — 2026-08-02
 
 ### 优化：LLM 配置选择器重做（论坛反馈「自动读取」与实际体验对齐）

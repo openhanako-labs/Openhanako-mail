@@ -1,6 +1,6 @@
 {
   "name": "hanako-mail-backend",
-  "version": "0.1.7",
+  "version": "0.1.9",
   "description": "Hanako Mail 插件后端引擎：IMAP/SMTP + ClawEmail + AgentQQ，含常驻 worker 与连接池。",
   "private": true,
   "license": "AGPL-3.0",

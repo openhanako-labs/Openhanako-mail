@@ -6,7 +6,7 @@ import { execFile } from "node:child_process";
 
 import * as llm from "../backend/llm.mjs";
 // 镜像 hana-code-atlas（代码图谱）：通过 ctx.bus 向 Hanako 宿主解析真实模型配置
-import { resolveLlmConfig, listChatModels } from "../backend/hana-llm.mjs";
+import { resolveLlmConfig, listChatModels, getProviderCatalog } from "../backend/hana-llm.mjs";
 import * as blocklist from "../backend/blocklist.mjs";
 // 凭据加密统一走公共模块（routes/tools/ws-monitor 共用，消除加解密不对称）
 import {
@@ -1013,65 +1013,57 @@ export default function (app, ctx) {
     minimax: "https://api.minimax.chat/v1",
   };
 
-  // 检测 Hanako「已添加的供应商」下的 chat 模型（v0.1.7 收紧）
-  // 来源：HanaAgent 全局设置里用户手动配过 Key 的供应商（~/.hanako/added-models.yaml 的 keys，
-  // 排除 _migrated），每个供应商下的 chat 模型来自宿主 provider:models-by-type。
-  // 凭据由 provider:credentials 服务端回源（前端不接触明文 Key）。
+  // 检测「已添加供应商」及其模型（v0.1.9 改读 provider-catalog.json）
+  // 数据源：~/.hanako/provider-catalog.json（HanaAgent 全局供应商目录，含 base_url/api_key/models/api），
+  // 与表情包等官方生态插件一致；只输出「已配 Key 且 base_url 非空」的供应商下的模型。
+  // 凭据由 getProviderCredentials 服务端回源（前端不接触明文 Key）。
   const postLlmDetect = async (c) => {
-    const home = os.homedir();
     const detected = [];
+    const catalog = getProviderCatalog(); // { providerId: { base_url, api_key, api, models, ... } }
 
-    // 1) 用户已在 HanaAgent 设置里添加的供应商（~/.hanako/added-models.yaml）
-    let addedKeys = [];
-    const addedModelsPath = path.join(home, ".hanako", "added-models.yaml");
-    try {
-      if (fs.existsSync(addedModelsPath)) {
-        const am = parseSimpleYaml(fs.readFileSync(addedModelsPath, "utf-8"));
-        addedKeys = Object.keys(am || {}).filter((k) => k !== "_migrated");
-      }
-    } catch {}
-
-    // 2) 宿主 provider:models-by-type（每个 provider 下的 chat 模型）
-    let providerModels = {}; // providerId -> [model, ...]
+    // 宿主 provider:models-by-type 作为「catalog 中该 provider 无 models 时」的补充
+    let providerModels = {};
     try {
       const host = await listChatModels(ctx);
       if (host.ok) {
-        for (const p of (host.providers || [])) {
-          providerModels[p.id] = p.models || [];
-        }
+        for (const p of (host.providers || [])) providerModels[p.id] = p.models || [];
       }
     } catch {}
 
-    // 3) 交叉：只输出"已添加供应商"下的模型（不显示未添加的 provider/agent/环境变量）
-    for (const pid of addedKeys) {
-      const models = providerModels[pid] || [];
-      for (const m of models) {
-        detected.push({
-          id: `host:${pid}:${m}`,
-          name: m,
-          provider: pid,
-          model: m,
-          fromHost: true,
-          configured: true,
-          note: `来源: Hanako 全局设置「已添加供应商 ${pid}」`,
-          needsKey: false,
-          needsBaseUrl: false,
-        });
+    const seen = new Set();
+    const pushModel = (pid, m) => {
+      const model = (m && typeof m === "object") ? (m.id || "") : String(m || "");
+      if (!model) return;
+      const k = `${pid}:${model}`;
+      if (seen.has(k)) return;
+      seen.add(k);
+      detected.push({
+        id: `host:${pid}:${model}`,
+        name: model,
+        provider: pid,
+        model,
+        fromHost: true,
+        configured: true,
+        note: `来源: Hanako 全局供应商目录「${pid}」`,
+        needsKey: false,
+        needsBaseUrl: false,
+      });
+    };
+
+    for (const [pid, p] of Object.entries(catalog)) {
+      // 只输出「已配 Key 且 base_url 非空」的供应商（真正可用的"已添加供应商"）
+      if (!p || !p.base_url || !p.api_key) continue;
+      const models = Array.isArray(p.models) ? p.models : [];
+      if (models.length) {
+        for (const m of models) pushModel(pid, m);
+      } else {
+        // catalog 没列模型 → 用宿主 models-by-type 补充
+        for (const m of (providerModels[pid] || [])) pushModel(pid, m);
       }
     }
 
-    // 去重（同 provider+model 防御）
-    const seen = new Set();
-    const deduped = detected.filter((d) => {
-      const k = `${d.provider}:${d.model}`;
-      if (seen.has(k)) return false;
-      seen.add(k);
-      return true;
-    });
-    // 按供应商首字母分组排序
-    deduped.sort((a, b) => (a.provider || "").localeCompare(b.provider || "") || a.model.localeCompare(b.model));
-
-    return c.json({ ok: true, data: deduped, addedKeys });
+    detected.sort((a, b) => (a.provider || "").localeCompare(b.provider || "") || a.model.localeCompare(b.model));
+    return c.json({ ok: true, data: detected });
   };
 
   // 测试 LLM 连接（发一个简单请求验证可用性）
