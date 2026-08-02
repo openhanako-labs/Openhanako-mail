@@ -1892,9 +1892,18 @@ function renderLlmDropdown() {
     dd.innerHTML = '<div class="llm-empty">未检测到已添加的供应商<br>请在 HanaAgent 全局设置里添加 LLM 供应商</div>';
     return;
   }
+  // 前端防御性去重（后端已按 provider+model 去重，但 HanaAgent provider:models-by-type
+  // 返回的模型数组在某些 provider 上有重复，deduped 失效时前端兜底——同一 provider+model 只渲染一次）
   var cur = getLlmConfig();
   var byP = {};
-  for (var i = 0; i < _llmItems.length; i++) (byP[_llmItems[i].provider] = byP[_llmItems[i].provider] || []).push(_llmItems[i]);
+  var seenK = new Set();
+  for (var i = 0; i < _llmItems.length; i++) {
+    var it = _llmItems[i];
+    var k = it.provider + ':' + it.model;
+    if (seenK.has(k)) continue;
+    seenK.add(k);
+    (byP[it.provider] = byP[it.provider] || []).push(it);
+  }
   var html = '';
   Object.keys(byP).sort().forEach(function (pid) {
     html += '<div class="llm-group"><div class="llm-group-header">' + esc(pid) + '</div>';
