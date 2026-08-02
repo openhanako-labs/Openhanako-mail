@@ -15,6 +15,9 @@ import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { buildFromEnv } from "./identity.mjs";
+// accounts.json 中的 apiKey 是加密存储的（routes/ui.js 加密落盘），读取后必须解密，
+// 否则 MailClient 会拿到 "ENC:..." 密文导致 WebSocket 实时收件失效。
+import { setCryptoDataDir, decryptSensitiveFields } from "./cred-crypto.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -54,7 +57,11 @@ function saveMail(accountId, mail) {
 
 function loadAccounts() {
   const accountsPath = path.join(getDataDir(), "accounts.json");
-  try { return JSON.parse(fs.readFileSync(accountsPath, "utf-8")); } catch { return []; }
+  try {
+    setCryptoDataDir(getDataDir());
+    const raw = JSON.parse(fs.readFileSync(accountsPath, "utf-8"));
+    return (Array.isArray(raw) ? raw : []).map(decryptSensitiveFields);
+  } catch { return []; }
 }
 
 function loadProcessed(accountId) {

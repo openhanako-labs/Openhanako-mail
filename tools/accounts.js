@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { setCryptoDataDir, encryptSensitiveFields, decryptSensitiveFields } from "../backend/cred-crypto.mjs";
 
 export const name = "mail_accounts";
 export const description = "邮件账号管理：列表/创建/删除账号";
@@ -20,16 +21,18 @@ export async function execute(input, ctx) {
   ctx.log?.info?.("mail_accounts", { action });
 
   const dataDir = path.join(ctx.dataDir, ctx.pluginId);
+  // 与 routes/ui.js 使用同一套凭据加解密（此前 tools 明文读写会破坏加密格式）
+  setCryptoDataDir(dataDir);
   const accountsPath = path.join(dataDir, "accounts.json");
 
   function readAccounts() {
-    try { return JSON.parse(fs.readFileSync(accountsPath, "utf-8")); }
+    try { return JSON.parse(fs.readFileSync(accountsPath, "utf-8")).map(decryptSensitiveFields); }
     catch { return []; }
   }
 
   function writeAccounts(list) {
     fs.mkdirSync(dataDir, { recursive: true });
-    fs.writeFileSync(accountsPath, JSON.stringify(list, null, 2), "utf-8");
+    fs.writeFileSync(accountsPath, JSON.stringify(list.map(encryptSensitiveFields), null, 2), "utf-8");
   }
 
   if (action === "list") {

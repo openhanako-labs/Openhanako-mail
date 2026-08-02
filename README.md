@@ -68,11 +68,13 @@ cd backend && npm install
 
 ## 安全模型
 
-- **凭据静态加密**：`apiKey` / `imapPass` / `smtpPass` 在写入 `accounts.json` 前使用 **AES-256-GCM** 加密。密钥由 `scrypt(用户名 + 固定盐)` 派生，绑定到当前机器用户，跨机器无法直接读取。明文凭据不进前端、不写日志。
+- **凭据静态加密**：`apiKey` / `imapPass` / `smtpPass` 在写入 `accounts.json` 前使用 **AES-256-GCM** 加密。密钥由 `scrypt(用户名 + per-install 随机盐)` 派生（盐存于插件数据目录 `.cred-salt`），仅凭 `accounts.json` 无法离线推导密钥，跨机器无法直接读取；兼容解密旧格式（v0.1.0 的硬编码盐格式）。明文凭据不进前端、不写日志。
 - **凭据传递**：后端凭据经进程环境变量（`CLAWEMAIL_API_KEY` / `IMAP_*` / `SMTP_*`）从 `accounts.json` 透传，子进程仅在缺失时回退读 `backend/.env`。
 - **访客意识 / 外部邮件隐私**：`identity.mjs` 维护内部联系人白名单。发送给外部收件人时进入待发送队列并需桌面确认；外部来信在 UI 中做隐私脱敏提示。
 - **正文渲染沙箱**：HTML 正文在 `sandbox` 属性 iframe 中渲染（`srcdoc`），防止邮件内脚本逃逸。
-- **外网图片代理**：正文中的外网 `<img>` / CSS `url()` 改写为同源 `/image-proxy?url=...`，由独立子进程拉取，绕过插件沙箱跨域限制并规避 SSRF（代理仅接受 http/https 且带鉴权 token）。
+- **外网图片代理**：正文中的外网 `<img>` / CSS `url()` 改写为同源 `/image-proxy?url=...`，由独立子进程拉取。代理仅接受 http/https，初始 URL 与每次重定向均校验 host（屏蔽私网/回环）、DNS 解析后校验解析 IP（防 rebinding）、限制响应 8MB，规避 SSRF。
+- **无 shell 执行**：所有外部 CLI（`agently-cli` / `mail-cli`）均解析出真实 JS 入口后用 `spawn(node, [entry, ...args], { shell: false })` 执行，用户可控参数不经过 cmd.exe 解析，杜绝命令注入。
+- **LLM 凭据不回前端**：总结/翻译/连接测试的 API Key 一律服务端回源（宿主 `provider:credentials` / agent `config.yaml`），浏览器与 localStorage 不接触明文 Key。
 
 ## 环境变量配置参考
 
@@ -86,7 +88,7 @@ cd backend && npm install
 | `IMAP_USER` / `IMAP_PASS` | IMAP 账号 / 授权码 | 个人邮箱 |
 | `SMTP_HOST` / `SMTP_PORT` | SMTP 服务器 | 个人邮箱 |
 | `SMTP_USER` / `SMTP_PASS` | SMTP 账号 / 授权码 | 个人邮箱 |
-| `HANAKO_LLM_BASE_URL` | **AI 总结/翻译端点**（OpenAI 兼容 `/v1/chat/completions`） | 全部 |
+| `HANAKO_LLM_BASE_URL` | **AI 总结/翻译端点兜底**（OpenAI 兼容 `/v1/chat/completions`，仅在宿主/agent 配置不可用时生效） | 全部 |
 | `HANAKO_LLM_API_KEY` | LLM 鉴权 Token（本地网关可留空） | 全部 |
 | `HANAKO_LLM_MODEL` | LLM 模型名（默认 `gpt-4o-mini`） | 全部 |
 
@@ -94,18 +96,23 @@ cd backend && npm install
 
 ## AI 功能（总结 / 翻译）
 
-详情页提供 **「总结」** 与 **「翻译」** 两个按钮，调用 Hanako 本体 LLM（OpenAI 兼容端点）对邮件正文做处理：
+详情页提供 **「总结」** 与 **「翻译」** 两个按钮，对邮件正文做 LLM 处理：
 
 - **总结**：将邮件正文提炼为 3-5 条中文要点，保留关键信息与待办。
 - **翻译**：将正文翻译为目标语言（当前固定 `中文`，可扩展为选项）。
 
-接线方式（走「选项 1 —— 复用 Hanako 本体 LLM」）：
+**配置为自动读取，无需手动填写 URL / API Key**（v0.1.1+）：
 
-1. 在 `backend/.env` 设置 `HANAKO_LLM_BASE_URL`（必填）。例如 `https://api.openai.com/v1` 或本地网关地址。
-2. 可选 `HANAKO_LLM_API_KEY`（部分本地网关无需鉴权）、`HANAKO_LLM_MODEL`。
-3. 未配置时点击按钮会返回明确提示：「LLM 未配置：请在 backend/.env 设置 HANAKO_LLM_BASE_URL…」，不会静默失败。
+1. 插件在「AI 设置」面板打开时（及页面加载时）自动检测本机可用配置；
+2. 检测优先级（真实 Key 一律服务端回源，绝不经过浏览器 / localStorage）：
+   - **Agent 配置**：`~/.hanako/agents/<agent-id>/config.yaml` 中的 `api.api_key` / `api.base_url` / `models.chat`；
+   - **宿主聊天供应商**：经 `ctx.bus` 调用 `provider:models-by-type` + `provider:credentials` 解析 baseUrl + apiKey；
+   - **环境变量兜底**：`HANAKO_LLM_BASE_URL` / `HANAKO_LLM_API_KEY` / `HANAKO_LLM_MODEL`（本地自托管网关调试用）。
+3. 未检测到任何配置时点击按钮返回明确提示，不会静默失败。
 
-> 当前 v1 仅处理**纯文本正文**（`text` / `body` / `snippet`）；纯 HTML 或纯图片邮件暂不支持总结/翻译。
+> 说明：
+> - 旧版需要用户在 UI 手填 Base URL / API Key 的表单已移除（明文 Key 不再进浏览器）。
+> - 当前仅处理**纯文本正文**（`text` / `body` / `snippet`）；纯 HTML 或纯图片邮件暂不支持。
 
 ## 故障排查
 

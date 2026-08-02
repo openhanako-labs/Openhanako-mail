@@ -28,7 +28,7 @@ function getImapConfig(email) {
     host: process.env.IMAP_HOST || "",
     port: parseInt(process.env.IMAP_PORT || "993", 10),
     tls: true,
-    tlsOptions: { rejectUnauthorized: false },
+    // 校验证书（原 rejectUnauthorized:false 会允许中间人截获邮箱凭据与全文，已移除）
   };
 
   // 域名自动推断
@@ -112,9 +112,9 @@ function connectImap(config) {
   });
 }
 
-function openBox(imap, boxName = "INBOX") {
+function openBox(imap, boxName = "INBOX", readOnly = true) {
   return new Promise((resolve, reject) => {
-    imap.openBox(boxName, true, (err, box) => {
+    imap.openBox(boxName, readOnly, (err, box) => {
       if (err) return reject(err);
       resolve(box);
     });
@@ -314,7 +314,8 @@ export async function deleteMessage(email, messageId, options = {}) {
       }
     }
     // 永久删除（已在垃圾箱，或账号无垃圾箱文件夹时）
-    await openBox(imap, folder);
+    // 必须可写打开 box，否则 addFlags \Deleted 会被 IMAP 服务器拒绝
+    await openBox(imap, folder, false);
     const uid = parseInt(messageId, 10);
     if (isNaN(uid)) throw new Error(`invalid messageId: ${messageId}`);
     await new Promise((resolve, reject) => {
@@ -549,7 +550,8 @@ export async function markRead(email, messageId, read = true, folder) {
   const config = getImapConfig(email);
   const imap = await connectImap(config);
   try {
-    await openBox(imap, folder || "INBOX");
+    // 修改 flags 需要可写打开
+    await openBox(imap, folder || "INBOX", false);
     const uid = parseInt(messageId, 10);
     if (isNaN(uid)) throw new Error(`invalid messageId: ${messageId}`);
     await new Promise((resolve, reject) => {
@@ -579,7 +581,8 @@ export async function moveMessage(email, messageId, targetFid, sourceFolder) {
   try {
     // 打开"源文件夹"（消息当前所在位置），而非固定 INBOX —— 否则非 INBOX 邮件无法定位 UID，两步删除/标记垃圾会失败
     const srcFolder = sourceFolder || "INBOX";
-    await openBox(imap, srcFolder);
+    // 可写打开：MOVE 不可用时的 COPY+DELETE 回退需要修改源邮件 flags
+    await openBox(imap, srcFolder, false);
     const uid = parseInt(messageId, 10);
     if (isNaN(uid)) throw new Error(`invalid messageId: ${messageId}`);
 
@@ -587,12 +590,13 @@ export async function moveMessage(email, messageId, targetFid, sourceFolder) {
     await new Promise((resolve, reject) => {
       imap.move(uid, targetFid, (err) => {
         if (err) {
-          // MOVE 不支持时 fallback 到 COPY + DELETE
+          // MOVE 不支持时 fallback 到 COPY + DELETE（修复：此前误用 delFlags \Seen
+          // 导致原件未被删除、邮件在两端各留一份；正确做法是 \Deleted + expunge）
           imap.copy(uid, targetFid, (copyErr) => {
             if (copyErr) return reject(copyErr);
-            imap.delFlags(uid, "\\Seen", (delErr) => {
+            imap.addFlags(uid, "\\Deleted", (delErr) => {
               if (delErr) return reject(delErr);
-              resolve();
+              imap.expunge((expErr) => (expErr ? reject(expErr) : resolve()));
             });
           });
         } else {

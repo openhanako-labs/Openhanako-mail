@@ -27,6 +27,19 @@ async function runInbox(args, extraEnv = {}) {
   });
 }
 
+// 结构化参数走 --json=<file> 通道（与 routes/ui.js 一致），避免长正文/特殊字符
+// 在命令行参数中受限或被解析错位
+function writeOptsFile(obj) {
+  const dir = path.join(BACKEND_DIR, "data", "_tmp");
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `opts_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.json`);
+  fs.writeFileSync(file, JSON.stringify(obj), "utf-8");
+  return file;
+}
+function safeUnlink(p) {
+  try { if (p) fs.unlinkSync(p); } catch {}
+}
+
 function resolveAccount(ctx, accountId) {
   const dataDir = path.join(ctx.dataDir, ctx.pluginId);
   const accountsPath = path.join(dataDir, "accounts.json");
@@ -64,15 +77,20 @@ export async function execute(input, ctx) {
   const extraEnv = inboxEnvFor(account);
 
   try {
-    if (messageId) {
-      const result = await runInbox(["reply", account.email, messageId, `--body=${body}`], extraEnv);
+    const optsFile = writeOptsFile({ to, subject, body });
+    try {
+      if (messageId) {
+        const result = await runInbox(["reply", account.email, messageId, `--json=${optsFile}`], extraEnv);
+        if (result.error) return { ok: false, error: result.error };
+        return { ok: true, data: result };
+      }
+
+      const result = await runInbox(["send", account.email, `--json=${optsFile}`], extraEnv);
       if (result.error) return { ok: false, error: result.error };
       return { ok: true, data: result };
+    } finally {
+      safeUnlink(optsFile);
     }
-
-    const result = await runInbox(["send", account.email, `--to=${to}`, `--subject=${subject}`, `--body=${body}`], extraEnv);
-    if (result.error) return { ok: false, error: result.error };
-    return { ok: true, data: result };
   } catch (e) {
     return { ok: false, error: e.message };
   }

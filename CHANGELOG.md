@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.1.1] — 2026-08-02
+
+### 安全修复（Security）
+- **修复命令注入（高危）**：`backend/agentqq-backend.mjs` 此前用 `spawn(cmd, { shell: true })` 拼接命令行，`\"` 转义在 cmd.exe 下无效，正文/收件人/主题含 `&` `|` 等元字符可触发任意命令执行。现改为解析 `agently-cli.cmd` 的真实 JS 入口（`@tencent-qqmail/agently-cli/scripts/run.js`），用 `spawn(node, [entry, ...args], { shell: false })` 传参，用户输入不再经过 shell。
+- **修复 mail-cli 同源风险**：`backend/clawemail-backend.mjs` 的 `runMailCli` 移除 `shell: true`，改为数组参数直连 node。
+- **修复图片代理 SSRF 绕过**：`assets/_proxy-fetch.cjs` 现在对**每次 302 重定向后的 URL 重新校验**（协议 + host），并增加 DNS 解析后 IP 校验（防 rebinding）、IPv4-mapped IPv6 拦截、响应体积上限（8MB）。
+- **修复 IMAP TLS 证书校验被关闭**：`backend/imap-backend.mjs` 移除 `tlsOptions.rejectUnauthorized: false`，邮箱链路易受中间人攻击的问题消除。
+- **凭据加密升级**：新增 `backend/cred-crypto.mjs` 统一加解密；密钥从「用户名 + 硬编码盐」升级为「用户名 + per-install 随机盐」（`.cred-salt`），并自动兼容解密旧格式。routes / tools / ws-monitor 三处读写统一走同一套实现，消除明文写、密文读的不对称。
+- **LLM Key 不再进前端**：`routes/ui.js` 的 `buildLlmOpts` / `postLlmTest` 不再信任前端传入的明文 apiKey，一律服务端回源（宿主 `provider:credentials` > agent `config.yaml` > 环境变量）；前端移除 Base URL / API Key 手填表单，页面加载自动检测配置。
+
+### Bug 修复（Fixes）
+- **IMAP 移动邮件回退分支**：`moveMessage` 的 COPY+DELETE 回退此前误用 `delFlags \Seen` 导致原件不删、邮件重复；改为 `addFlags \Deleted` + `expunge`，并对删除/移动/标记已读统一使用可写 box 打开。
+- **`postLlmTest` 参数名**：`maxTokens` → `max_tokens`（此前测试请求实际发 1500 token）。
+- **`tools/send.js` 长正文**：发送参数改走 `--json=<file>` 通道，避免 Windows 32KB 命令行限制与特殊字符错位。
+
+### 改进（Improvements）
+- `tools/accounts.js` 读写 accounts.json 复用统一加密（此前明文写会破坏加密格式）。
+- `backend/ws-monitor.mjs` 读取账号后解密 apiKey（此前直接拿密文，实时收件可能失效）。
+
 ## [Unreleased] — 2026-07-29
 
 ### 修复 (Bug Fixes)

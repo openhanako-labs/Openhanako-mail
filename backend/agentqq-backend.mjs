@@ -5,24 +5,59 @@
  * 所有输出：{ ok: true, data: {...} }
  */
 
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const MAIL_CLI = "mail-cli.cmd";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// ── 解析 agently-cli 真实 JS 入口（绕过 .cmd shim，避免 shell 拼接注入） ──
+// npm 安装的 agently-cli 是 Windows shim（.cmd），内部最终执行：
+//   node "<dp0>\node_modules\@tencent-qqmail\agently-cli\scripts\run.js" %*
+// 我们直接解析出 run.js 路径，用 spawn(node, [entry, ...args], {shell:false})
+// 传参，用户可控参数（to/subject/body/keyword 等）不再经过 cmd.exe 解析，
+// 从根本上消除命令注入（原实现用 \" 转义在 cmd.exe 下无效，可被 & | 等绕过）。
+function resolveCliEntry() {
+  // 1) 本地安装（backend/node_modules/...）
+  const local = path.join(__dirname, "node_modules", "@tencent-qqmail", "agently-cli", "scripts", "run.js");
+  if (fs.existsSync(local)) return local;
+  // 2) 全局 npm shim：定位 agently-cli.cmd 并解析其指向的 run.js
+  try {
+    const which = process.platform === "win32" ? "where" : "which";
+    const out = execFileSync(which, ["agently-cli"], { encoding: "utf8", windowsHide: true, shell: process.platform === "win32" });
+    const first = String(out).split(/\r?\n/).map(s => s.trim()).find(Boolean);
+    if (!first) return null;
+    const cmdPath = /\.cmd$/i.test(first) ? first : `${first}.cmd`;
+    if (!fs.existsSync(cmdPath)) return null;
+    const content = fs.readFileSync(cmdPath, "utf-8");
+    const m = content.match(/%dp0%\\node_modules\\([^"%\s]+)/i);
+    if (m) {
+      const p = path.join(path.dirname(cmdPath), "node_modules", m[1].trim());
+      if (fs.existsSync(p)) return p;
+    }
+  } catch { /* 继续走下方错误路径 */ }
+  return null;
+}
+
+let _cliEntry = undefined;
+function getCliEntry() {
+  if (_cliEntry === undefined) _cliEntry = resolveCliEntry();
+  return _cliEntry;
+}
 
 function runAgentlyCli(args, timeout = 30000) {
   return new Promise((resolve, reject) => {
-    const escapedArgs = args.map(a => {
-      if (a.includes(' ') || a.includes('"')) {
-        return `"${a.replace(/"/g, '\\"')}"`;
-      }
-      return a;
-    });
-    const cmd = `agently-cli.cmd ${escapedArgs.join(' ')}`;
-    const proc = spawn(cmd, {
+    const entry = getCliEntry();
+    if (!entry) {
+      return reject(new Error("未找到 agently-cli 入口（@tencent-qqmail/agently-cli 未安装或不在 PATH），请先执行: npm install -g agently-cli"));
+    }
+    // shell:false + 数组参数 → 用户输入永不进入 cmd.exe 解析，无注入面
+    const proc = spawn(process.execPath, [entry, ...args], {
       encoding: "utf-8",
       timeout,
       windowsHide: true,
-      shell: true,
+      shell: false,
     });
 
     let stdout = "";

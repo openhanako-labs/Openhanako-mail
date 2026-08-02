@@ -30,11 +30,13 @@ async function loadMailClient() {
 function runMailCli(args, timeout = 15000) {
   return new Promise((resolve, reject) => {
     const mailCliBin = path.join(__dirname, "node_modules", "@clawemail", "mail-cli", "bin", "mail-cli");
+    // shell:false + 数组参数：mailCliBin 是纯 JS 文件，由 node 直接执行，
+    // 用户可控参数（folder/ids）不再经过 cmd.exe 解析（原 shell:true 存在注入面）。
     const proc = spawn(process.execPath, [mailCliBin, "--json", ...args], {
       encoding: "utf-8",
       timeout,
       windowsHide: true,
-      shell: true,
+      shell: false,
     });
 
     let stdout = "";

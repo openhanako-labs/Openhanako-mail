@@ -3,71 +3,25 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
-import crypto from "node:crypto";
 
 import * as llm from "../backend/llm.mjs";
 // 镜像 hana-code-atlas（代码图谱）：通过 ctx.bus 向 Hanako 宿主解析真实模型配置
 import { resolveLlmConfig, listChatModels } from "../backend/hana-llm.mjs";
 import * as blocklist from "../backend/blocklist.mjs";
+// 凭据加密统一走公共模块（routes/tools/ws-monitor 共用，消除加解密不对称）
+import {
+  setCryptoDataDir,
+  encryptSensitiveFields,
+  decryptSensitiveFields,
+} from "../backend/cred-crypto.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ── 凭证明文 AES-256-GCM 加密 ────────────────────────
-// 密钥来源：固定盐 + 机器用户名，防止跨机器直接读取，但同一机器可解密。
-const CRYPTO_SALT = "hanako-mail-plugin-salt-v1";
-function getCryptoKey() {
-  const material = `${os.userInfo().username}-${CRYPTO_SALT}`;
-  return crypto.scryptSync(material, "hanako-mail-nonce", 32);
-}
-
-function encryptField(text) {
-  if (!text || typeof text !== "string") return text;
-  const key = getCryptoKey();
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
-  const enc = Buffer.concat([cipher.update(text, "utf8"), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return `ENC:${iv.toString("hex")}:${tag.toString("hex")}:${enc.toString("hex")}`;
-}
-
-function decryptField(token) {
-  if (!token || typeof token !== "string") return token;
-  if (!token.startsWith("ENC:")) return token;
-  const parts = token.slice(4).split(":");
-  if (parts.length !== 3) return token;
-  const [ivHex, tagHex, encHex] = parts;
-  const key = getCryptoKey();
-  const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(ivHex, "hex"));
-  decipher.setAuthTag(Buffer.from(tagHex, "hex"));
-  const dec = Buffer.concat([decipher.update(Buffer.from(encHex, "hex")), decipher.final()]);
-  return dec.toString("utf8");
-}
-
-function encryptSensitiveFields(account) {
-  const out = { ...account };
-  if (out.apiKey && typeof out.apiKey === "string") out.apiKey = encryptField(out.apiKey);
-  if (out.config && typeof out.config === "object") {
-    const cfg = { ...out.config };
-    if (cfg.imapPass && typeof cfg.imapPass === "string") cfg.imapPass = encryptField(cfg.imapPass);
-    if (cfg.smtpPass && typeof cfg.smtpPass === "string") cfg.smtpPass = encryptField(cfg.smtpPass);
-    out.config = cfg;
-  }
-  return out;
-}
-
-function decryptSensitiveFields(account) {
-  if (!account || typeof account !== "object") return account;
-  const out = { ...account };
-  if (out.apiKey && typeof out.apiKey === "string") out.apiKey = decryptField(out.apiKey);
-  if (out.config && typeof out.config === "object") {
-    const cfg = { ...out.config };
-    if (cfg.imapPass && typeof cfg.imapPass === "string") cfg.imapPass = decryptField(cfg.imapPass);
-    if (cfg.smtpPass && typeof cfg.smtpPass === "string") cfg.smtpPass = decryptField(cfg.smtpPass);
-    out.config = cfg;
-  }
-  return out;
-}
+// ── 凭证明文加密（实现已迁移至 backend/cred-crypto.mjs，此处仅保留说明） ──
+// 历史实现：AES-256-GCM + scrypt(用户名 + 硬编码盐)。
+// 现实现：AES-256-GCM + scrypt(用户名 + per-install 随机盐)，兼容旧格式解密。
+// 加解密函数由上面 import 的 cred-crypto.mjs 提供。
 
 // 兼容 dev 加载：如果 __dirname 指向源目录，尝试用插件上下文解析
 const DEVICES = new Set(["C", "D", "E", "W"]);
@@ -328,32 +282,38 @@ async function resolveAgentYamlLlm(agentId) {
   }
 }
 
-// 解析 LLM 调用选项：前端自定义优先，否则从 Hanako 宿主（provider:credentials）解析真实配置。
-// 这是对照 hana-code-atlas（代码图谱）修正的核心：此前读不到的 HANAKO_LLM_* 不再作为唯一来源。
+// 解析 LLM 调用选项：配置引用优先，真实 key 一律服务端回源，绝不信任前端传的明文 apiKey。
+// 用户不需要（也不允许）手填 URL / API Key —— 直接从 Hanako 宿主或本机 agent 配置读取。
+// 引用形式（来自 /llm-detect 检测结果）：
+//   { agentId }                → 从 ~/.hanako/agents/<agentId>/config.yaml 读取 url + key + model
+//   { providerId, model }      → 从宿主 provider:credentials 解析 baseUrl + apiKey
+// 兜底：llm.mjs 内部的环境变量（HANAKO_LLM_* / OPENAI_*）
 async function buildLlmOpts(ctx, llmCfg, body = {}) {
-  // 前端传入真实 key（非脱敏占位）时直接采用
-  if (llmCfg && llmCfg.baseUrl && llmCfg.model && llmCfg.apiKey && !String(llmCfg.apiKey).includes("****")) {
-    return { baseUrl: llmCfg.baseUrl, apiKey: llmCfg.apiKey, model: llmCfg.model };
-  }
-  try {
-    const cfg = await resolveLlmConfig(ctx, { providerId: body?.providerId, model: body?.model });
-    if (cfg.ok) return { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model, api: cfg.api };
-    ctx?.log?.warn?.("mail_llm.resolve_failed", { error: cfg.error });
-  } catch (e) {
-    ctx?.log?.warn?.("mail_llm.resolve_exception", { error: e?.message });
-  }
-  // 新增：检测到的 Agent 配置（apiKey 存于 config.yaml，检测时脱敏、运行时回源）
-  if (llmCfg?.agentId) {
-    const ay = await resolveAgentYamlLlm(llmCfg.agentId);
-    if (ay) {
+  const cfg = llmCfg || {};
+  // 1) agent 配置引用（config.yaml 内已有真实 apiKey，服务端回源，最贴合"直接读取 url 和 api"）
+  if (cfg.agentId) {
+    const ay = await resolveAgentYamlLlm(cfg.agentId);
+    if (ay && ay.apiKey) {
       return {
-        baseUrl: llmCfg.baseUrl || ay.baseUrl,
+        baseUrl: (cfg.baseUrl && !String(cfg.baseUrl).includes("****")) ? cfg.baseUrl : (ay.baseUrl || ""),
         apiKey: ay.apiKey,
-        model: llmCfg.model || ay.model,
+        model: cfg.model || ay.model,
       };
     }
   }
-  return {}; // 回退到 llm.mjs 内部的环境变量兜底
+  // 2) 宿主聊天供应商（providerId + model 引用，凭据由宿主管理）
+  try {
+    const resolved = await resolveLlmConfig(ctx, {
+      providerId: cfg.providerId || body?.providerId,
+      model: cfg.model || body?.model,
+    });
+    if (resolved.ok) return { baseUrl: resolved.baseUrl, apiKey: resolved.apiKey, model: resolved.model, api: resolved.api };
+    ctx?.log?.warn?.("mail_llm.resolve_failed", { error: resolved.error });
+  } catch (e) {
+    ctx?.log?.warn?.("mail_llm.resolve_exception", { error: e?.message });
+  }
+  // 3) 环境变量兜底（llm.mjs 内部处理），返回空对象即可
+  return {};
 }
 
 // 从邮件对象抽取发件人邮箱（兼容 from 为字符串 / 数组 / {address} 对象）
@@ -375,6 +335,8 @@ function senderOf(msg) {
 
 export default function (app, ctx) {
   const dataDir = path.join(ctx.dataDir, ctx.pluginId);
+  // 凭据加密数据目录与 accounts.json 对齐（routes/tools/ws-monitor 同一路径）
+  setCryptoDataDir(dataDir);
   const cacheDir = path.join(dataDir, "cache");
   const templatePath = path.join(ctx.pluginDir, "assets", "plugin-page-template.html");
 
@@ -1155,21 +1117,38 @@ export default function (app, ctx) {
   };
 
   // 测试 LLM 连接（发一个简单请求验证可用性）
+  // 与总结/翻译一致：key 一律服务端回源（agent config.yaml / 宿主 provider:credentials），
+  // 不接收前端传来的明文 apiKey（key 不应出现在浏览器/localStorage/网络请求中）。
   const postLlmTest = async (c) => {
     const body = await c.req.json().catch(() => ({}));
-    let { baseUrl, apiKey, model, api } = body;
-    // 未显式给配置时，从 Hanako 宿主解析真实可用的模型配置
-    if (!baseUrl || !model) {
+    let { baseUrl, model, api } = body;
+    let apiKey = "";
+
+    // 优先按 agent 配置引用回源
+    if (body?.agentId) {
+      const ay = await resolveAgentYamlLlm(body.agentId);
+      if (ay && ay.apiKey) {
+        baseUrl = (baseUrl && !String(baseUrl).includes("****")) ? baseUrl : ay.baseUrl;
+        apiKey = ay.apiKey;
+        model = model || ay.model;
+      }
+    }
+    // 否则从宿主解析
+    if (!apiKey) {
       const cfg = await resolveLlmConfig(ctx, { providerId: body?.providerId, model: body?.model });
       if (!cfg.ok) return c.json({ ok: false, error: `无法从宿主解析 LLM 配置: ${cfg.error}` });
       baseUrl = cfg.baseUrl; apiKey = cfg.apiKey; model = cfg.model; api = cfg.api;
+    }
+
+    if (!baseUrl || !model) {
+      return c.json({ ok: false, error: "未找到可用的 LLM 配置：请先在 Hanako 设置中配置聊天供应商，或检测到 agent 配置后再试" });
     }
 
     try {
       // 用后端 llm.mjs 的 chatCompletion 发一条测试消息
       const result = await llm.chatCompletion(
         [{ role: "user", content: "Reply with exactly: OK" }],
-        { baseUrl, apiKey, model, api, maxTokens: 8 }
+        { baseUrl, apiKey, model, api, max_tokens: 8 }
       );
       return c.json({ ok: true, data: result?.model || model });
     } catch (e) {
