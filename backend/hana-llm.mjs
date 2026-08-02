@@ -155,6 +155,36 @@ export async function getProviderCredentials(ctx, providerId) {
  * @param {{providerId?:string, model?:string}} [requested] 前端/已存的选择
  */
 export async function resolveLlmConfig(ctx, requested = {}) {
+  // 0) 优先从 provider-catalog.json 直接取（不依赖宿主 ctx.bus，最稳的离线兜底）
+  const catalog = getProviderCatalog();
+  const reqPid = requested.providerId;
+  if (reqPid) {
+    const p = findCatalogProvider(reqPid);
+    if (p && p.base_url && p.api_key) {
+      const models = Array.isArray(p.models) ? p.models : [];
+      // 选 model：优先 requested.model；否则 catalog.models[0]
+      let model = requested.model;
+      if (!model && models.length) {
+        const first = models[0];
+        model = (first && typeof first === "object") ? (first.id || "") : String(first);
+      }
+      if (!model) return { ok: false, error: "llm_model_not_available" };
+      // 验证 requested.model 是否在 catalog.models 中
+      const inCatalog = models.some((m) => (m && typeof m === "object") ? m.id : m === model);
+      if (!requested.model || inCatalog) {
+        return {
+          ok: true,
+          providerId: reqPid,
+          model,
+          baseUrl: p.base_url,
+          apiKey: p.api_key,
+          api: normalizeApi(p.api),
+        };
+      }
+      // requested.model 不在 catalog.models 中 → 落到宿主 bus 兜底
+    }
+  }
+  // 1) fallback: 宿主 bus（ctx.bus.request 拿到模型列表与凭据）
   const list = await listChatModels(ctx);
   if (!list.ok) return { ok: false, error: list.error, detail: list.detail };
   const sel = selectChatModel(list.providers, requested.providerId, requested.model);
