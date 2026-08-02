@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.5] — 2026-08-02
+
+### 功能新增
+- **IMAP 服务端搜索**（`imap-backend.searchMessages` + `inbox.searchMessages` 改走服务端）：用 IMAP SEARCH（`OR(FROM kw, SUBJECT kw)`）替代原先「拉全量 100 封后客户端过滤」，大邮箱搜索不再漏结果、性能显著提升。ClawEmail / AgentQQ 原本就是服务端检索，不变。
+- **批量删除**：新增 `POST /bulk-delete`（一次 IPC 批量处理，IMAP 连接池复用；单封失败不中断，返回 `{deleted, failed}`）。前端批量工具栏「删除」由逐个调 DELETE 改为单次批量调用；缓存同步移除已删邮件。
+- **草稿保存**：新增 `POST /draft` + `inbox.saveDraft` + `imap-backend.saveDraft`（`buildRawMessage` 构建原文，append 到 DRAFTS 文件夹并打 `\Draft` 标记，自动定位草稿文件夹）。前端写信页新增「存草稿」按钮；保存后可在文件夹列表「Drafts / 草稿」中查看。仅 IMAP 后端支持，ClawEmail / AgentQQ 返回明确错误。
+- `inbox.mjs` 新增 CLI 命令：`bulk-delete`（`--json={ids,folder}`）、`save-draft`（`--json={to,cc,bcc,subject,body}`）。
+
+### 文档
+- README 能力矩阵更新：搜索/批量删除/草稿行与说明。
+
 ## [0.1.4] — 2026-08-02
 
 ### 性能：IMAP / SMTP 连接池

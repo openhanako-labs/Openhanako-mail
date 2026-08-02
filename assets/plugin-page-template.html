@@ -614,6 +614,7 @@ setTimeout(function(){try{window.parent.postMessage({source:'hana-plugin',type:'
               <input type="file" id="cmpAttach" multiple class="inp">
               <div class="field-row">
                 <button type="submit" class="btn primary">发送</button>
+                <button type="button" class="btn" id="cmpDraft">存草稿</button>
                 <button type="button" class="btn" id="cmpCancel">取消</button>
               </div>
             </form>
@@ -1406,6 +1407,24 @@ document.getElementById('searchClearBtn').onclick = function () {
 document.getElementById('composeBtn').onclick = function () { openCompose('write', null); };
 document.getElementById('cmpCancel').onclick = function () { navigateTo('list'); };
 
+// 存草稿（v0.1.5）：IMAP 后端 append 到 DRAFTS 文件夹；ClawEmail/AgentQQ 会返回明确错误
+document.getElementById('cmpDraft').onclick = function () {
+  if (!state.accountId) { toast('请先选择账号'); return; }
+  var subject = document.getElementById('cmpSubject').value.trim();
+  var bodyText = document.getElementById('cmpBody').value;
+  if (!subject && !bodyText) { toast('主题和正文都为空，无需保存'); return; }
+  var to = document.getElementById('cmpTo').value.trim();
+  var cc = document.getElementById('cmpCc').value.trim();
+  var bcc = document.getElementById('cmpBcc').value.trim();
+  api('/draft', {
+    method: 'POST',
+    body: JSON.stringify({ accountId: state.accountId, to: to, cc: cc, bcc: bcc, subject: subject, body: bodyText })
+  }).then(function (r) { return r.json(); }).then(function (d) {
+    if (d && d.ok) { toast('草稿已保存到 ' + ((d.data && d.data.draftFolder) || 'Drafts')); loadFolders(state.accountId); }
+    else { toast('保存失败：' + (d && d.error ? d.error : '未知错误')); }
+  }).catch(function () { toast('保存失败'); });
+};
+
 document.getElementById('composeForm').onsubmit = function (e) {
   e.preventDefault();
   var mode = this.dataset.mode;
@@ -1584,30 +1603,22 @@ document.getElementById('batchDelete').addEventListener('click', function () {
   var count = _selectedIds.size;
   if (!confirm('确定要删除选中的 ' + count + ' 封邮件吗？')) return;
   var ids = Array.from(_selectedIds);
-  var done = 0, failed = 0;
-  ids.forEach(function (id) {
-    api('/messages/' + encodeURIComponent(id) + '?accountId=' + encodeURIComponent(state.accountId) + '&folder=' + encodeURIComponent(state.folderId || 'INBOX'), { method: 'DELETE' })
-      .then(function (r) {
-        return r.json().then(function (d) { return { ok: r.ok && d.ok !== false, d: d }; })
-          .catch(function () { return { ok: false, d: { error: '响应解析失败 (HTTP ' + r.status + ')' } }; });
-      })
-      .then(function (res) {
-        if (!res.ok) throw new Error((res.d && res.d.error) || '删除失败');
-        done++;
-      })
-      .catch(function (e) {
-        failed++;
-        console.warn('删除失败', id, e && e.message);
-      })
-      .then(function () {
-        if (done + failed === ids.length) {
-          toast(failed === 0 ? ('已删除 ' + done + ' 封邮件') : ('已删除 ' + done + ' 封，失败 ' + failed + ' 封'));
-          _selectedIds.clear(); updateBatchUI();
-          loadMessages(state.accountId, state.folderId);
-          loadFolders(state.accountId);
-        }
-      });
-  });
+  api('/bulk-delete', {
+    method: 'POST',
+    body: JSON.stringify({ accountId: state.accountId, ids: ids, folder: state.folderId || 'INBOX' })
+  }).then(function (r) { return r.json(); }).then(function (d) {
+    if (d && d.ok) {
+      var data = d.data || {};
+      var deletedN = (data.deleted || []).length;
+      var failedN = (data.failed || []).length;
+      toast(failedN === 0 ? ('已删除 ' + deletedN + ' 封邮件') : ('已删除 ' + deletedN + ' 封，失败 ' + failedN + ' 封'));
+    } else {
+      toast('删除失败：' + (d && d.error ? d.error : '未知错误'));
+    }
+    _selectedIds.clear(); updateBatchUI();
+    loadMessages(state.accountId, state.folderId);
+    loadFolders(state.accountId);
+  }).catch(function () { toast('删除失败'); });
 });
 
 /* ── 黑名单 / 白名单管理（6.4） ── */

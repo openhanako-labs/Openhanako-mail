@@ -124,14 +124,8 @@ export async function searchMessages(accountEmail, keyword, options = {}) {
     return await clawemail.searchMessages(keyword, options);
   }
   if (config.backend === "imap") {
-    // IMAP 搜索回退到全量列表后过滤
-    const all = await imap.listMessages(accountEmail, { limit: 100 });
-    const kw = keyword.toLowerCase();
-    return all.filter(m => {
-      const s = (m.subject || "").toLowerCase();
-      const f = (m.from || "").toLowerCase();
-      return s.includes(kw) || f.includes(kw);
-    });
+    // IMAP 服务端检索（IMAP SEARCH：FROM/SUBJECT），大邮箱不再拉全量客户端过滤
+    return await imap.searchMessages(accountEmail, keyword, options);
   }
   return await agentqq.searchMessages(keyword, options);
 }
@@ -304,6 +298,35 @@ export async function deleteMessage(accountEmail, messageId, options = {}) {
   throw new Error("deleteMessage: AgentQQ backend delete not implemented (CLI limitation)");
 }
 
+/**
+ * 批量删除（v0.1.5）：循环单封删除，单封失败不中断整体。
+ * 常驻 worker 下 IMAP 连接池复用，无需逐封重建连接。
+ * @returns {{ deleted: string[], failed: {id:string,error:string}[] }}
+ */
+export async function bulkDelete(accountEmail, ids, options = {}) {
+  const list = Array.isArray(ids) ? ids.map((x) => String(x)) : [];
+  const deleted = [];
+  const failed = [];
+  for (const id of list) {
+    try {
+      await deleteMessage(accountEmail, id, options);
+      deleted.push(id);
+    } catch (e) {
+      failed.push({ id, error: String(e?.message || e) });
+    }
+  }
+  return { deleted, failed };
+}
+
+/** 保存草稿（v0.1.5）：仅 IMAP 后端支持（append 到 DRAFTS 文件夹）。 */
+export async function saveDraft(accountEmail, options = {}) {
+  const config = getAccount(accountEmail);
+  if (config.backend !== "imap") {
+    throw new Error("saveDraft: 仅 IMAP 后端支持草稿保存（ClawEmail / AgentQQ 暂不支持）");
+  }
+  return await imap.saveDraft(accountEmail, options);
+}
+
 export async function markSpam(accountEmail, messageId, options = {}) {
   const config = getAccount(accountEmail);
   if (config.backend === "clawemail") {
@@ -450,6 +473,15 @@ export const COMMANDS = {
   delete: async ([email, messageId, ...rest]) => {
     const opts = parseOptions(rest);
     return await deleteMessage(email, messageId, opts);
+  },
+  "bulk-delete": async ([email, ...rest]) => {
+    const opts = parseOptions(rest);
+    const ids = Array.isArray(opts.ids) ? opts.ids : (opts.ids ? String(opts.ids).split(",").map(s => s.trim()).filter(Boolean) : []);
+    return await bulkDelete(email, ids, opts);
+  },
+  "save-draft": async ([email, ...rest]) => {
+    const opts = parseOptions(rest);
+    return await saveDraft(email, opts);
   },
   spam: async ([email, messageId]) => {
     return await markSpam(email, messageId);

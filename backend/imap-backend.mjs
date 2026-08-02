@@ -121,7 +121,7 @@ function openBox(imap, boxName = "INBOX", readOnly = true) {
   });
 }
 
-function searchMessages(imap, criteria) {
+function imapSearch(imap, criteria) {
   return new Promise((resolve, reject) => {
     imap.search(criteria, (err, results) => {
       if (err) return reject(err);
@@ -407,7 +407,7 @@ export async function listMessages(email, options = {}) {
   const { limit = 20, folder = "INBOX" } = options;
   return await withImap(email, async (imap) => {
     await openBox(imap, folder);
-    const uids = await searchMessages(imap, ["ALL"]);
+    const uids = await imapSearch(imap, ["ALL"]);
     const recent = uids.slice(Math.max(0, uids.length - Math.max(limit, 50)));
     const rawMessages = await fetchMessages(imap, recent);
     const parsed = await parseMessages(rawMessages);
@@ -656,6 +656,83 @@ function mapType(name) {
   if (n.includes("trash") || n.includes("已删除")) return "trash";
   if (n.includes("spam") || n.includes("垃圾")) return "spam";
   return "custom";
+}
+
+// ── 服务端搜索（IMAP SEARCH，v0.1.5） ──────────────────
+// 替代原先「拉全量后客户端过滤」：大邮箱下性能显著提升。
+// criteria：OR(FROM kw, SUBJECT kw) —— 发件人/主题命中即返回。
+export async function searchMessages(email, keyword, options = {}) {
+  const { limit = 20, folder = "INBOX" } = options;
+  const kw = String(keyword || "").trim();
+  if (!kw) return [];
+  return await withImap(email, async (imap) => {
+    await openBox(imap, folder);
+    const uids = await imapSearch(imap, [["OR", ["FROM", kw], ["SUBJECT", kw]]]);
+    const recent = uids.slice(Math.max(0, uids.length - Math.max(limit, 50)));
+    const rawMessages = await fetchMessages(imap, recent);
+    const parsed = await parseMessages(rawMessages);
+    parsed.sort((a, b) => (b.date || 0) - (a.date || 0));
+    return parsed.slice(0, limit);
+  });
+}
+
+// ── 草稿保存（v0.1.5） ─────────────────────────────────
+function findDraftFolderName(boxes, delimiter) {
+  if (!boxes || typeof boxes !== "object") return null;
+  const delim = delimiter || "/";
+  const candidates = ["drafts", "草稿", "draft", "entwürfe", "brouillons"];
+  function walk(obj, prefix) {
+    for (const [name, box] of Object.entries(obj)) {
+      const fullName = prefix ? `${prefix}${delim}${name}` : name;
+      const lower = name.toLowerCase();
+      if (candidates.includes(lower) || lower.includes("draft")) return fullName;
+      if (box && box.children) {
+        const found = walk(box.children, fullName);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+  return walk(boxes, "");
+}
+
+/**
+ * 把当前写信内容作为草稿 append 到 DRAFTS 文件夹（\Draft 标记）。
+ * 仅 IMAP 后端支持；ClawEmail / AgentQQ 由 inbox.mjs 统一拦截报错。
+ */
+export async function saveDraft(email, options = {}) {
+  const { to, cc, bcc, subject, body, html = false, attachments = [] } = options;
+  const mailOptions = {
+    from: email,
+    to: Array.isArray(to) ? to.join(", ") : to,
+    subject: subject || "(无主题)",
+    [html ? "html" : "text"]: body || "",
+  };
+  if (cc) mailOptions.cc = Array.isArray(cc) ? cc.join(", ") : cc;
+  if (bcc) mailOptions.bcc = Array.isArray(bcc) ? bcc.join(", ") : bcc;
+  if (attachments && attachments.length) {
+    mailOptions.attachments = attachments.map((a) => ({
+      filename: a.filename || path.basename(a.path || "attachment"),
+      path: a.path,
+      contentType: a.contentType,
+    }));
+  }
+  const raw = await buildRawMessage(mailOptions);
+  const draftFolder = await withImap(email, async (imap) => {
+    const boxes = await new Promise((resolve, reject) => {
+      imap.getBoxes((err, b) => (err ? reject(err) : resolve(b)));
+    });
+    const delim = imap.delimiter || "/";
+    const name = findDraftFolderName(boxes, delim) || "Drafts";
+    await new Promise((resolve, reject) => {
+      imap.append(raw, { mailbox: name, flags: ["\\Draft"] }, (err) => {
+        if (err) return reject(err);
+        resolve();
+      });
+    });
+    return name;
+  });
+  return { saved: true, draftFolder };
 }
 
 export async function markRead(email, messageId, read = true, folder) {

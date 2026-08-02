@@ -812,6 +812,61 @@ export default function (app, ctx) {
     return c.json({ ok: true, data: blocklist.getBlocklist() });
   };
 
+  // 批量删除（v0.1.5）：单次 IPC 处理多封，单封失败不中断
+  const postBulkDelete = async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const accountId = body?.accountId || "";
+    const ids = Array.isArray(body?.ids) ? body.ids.map((x) => String(x)) : [];
+    const folder = body?.folder || "INBOX";
+    if (!accountId) return c.json({ ok: false, error: "accountId is required" });
+    if (!ids.length) return c.json({ ok: false, error: "ids is required" });
+    const account = resolveAccount(accounts(), accountId);
+    if (!account) return c.json({ ok: false, error: "account not found" });
+    const depIssue = checkBackendDeps(account);
+    if (handleDepIssue(c, depIssue)) return;
+    const optsFile = writeInboxOptions({ ids, folder });
+    try {
+      const result = await runInbox(["bulk-delete", account.email, `--json=${optsFile}`], inboxEnvFor(account));
+      if (result && result.error) return c.json({ ok: false, error: result.error });
+      // 同步从本地缓存移除已删邮件
+      try {
+        const cacheFile = path.join(cacheDir, `messages-${accountId}-${folder}.json`);
+        const arr = readJson(cacheFile, null);
+        if (Array.isArray(arr)) {
+          const rm = new Set((result?.deleted || []).map(String));
+          const filtered = arr.filter((m) => !rm.has(String(m.id)));
+          if (filtered.length !== arr.length) writeJson(cacheFile, filtered);
+        }
+      } catch {}
+      return c.json({ ok: true, data: result });
+    } catch (e) {
+      return c.json({ ok: false, error: String(e.message || e) });
+    } finally {
+      safeUnlink(optsFile);
+    }
+  };
+
+  // 保存草稿（v0.1.5）：仅 IMAP 后端支持（append 到 DRAFTS）
+  const postDraft = async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const { accountId, to, cc, bcc, subject, body: text } = body;
+    if (!accountId) return c.json({ ok: false, error: "accountId is required" });
+    const account = resolveAccount(accounts(), accountId);
+    if (!account) return c.json({ ok: false, error: "account not found" });
+    const depIssue = checkBackendDeps(account);
+    if (handleDepIssue(c, depIssue)) return;
+    const optsFile = writeInboxOptions({ to, cc, bcc, subject, body: text });
+    try {
+      const result = await runInbox(["save-draft", account.email, `--json=${optsFile}`], inboxEnvFor(account));
+      if (result && result.error) return c.json({ ok: false, error: result.error });
+      return c.json({ ok: true, data: result });
+    } catch (e) {
+      return c.json({ ok: false, error: String(e.message || e) });
+    } finally {
+      safeUnlink(optsFile);
+    }
+  };
+
   const postBlocklist = async (c) => {
     const body = await c.req.json().catch(() => ({}));
     const type = body?.type === "white" ? "white" : "black";
@@ -1138,6 +1193,8 @@ export default function (app, ctx) {
   app.post("/translate", postTranslate);
   app.post("/mark-read", postMarkRead);
   app.post("/mark-spam", postMarkSpam);
+  app.post("/bulk-delete", postBulkDelete);
+  app.post("/draft", postDraft);
   app.get("/blocklist", getBlocklist);
   app.post("/blocklist", postBlocklist);
   app.get("/search", getSearch);
