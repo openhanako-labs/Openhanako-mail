@@ -460,6 +460,26 @@ body[data-hana-theme="dark"] .account-fields { border-left-color: var(--gold); }
 }
 .llm-preset .preset-chip:hover { background: var(--hover-row); border-color: var(--gold); }
 .llm-preset .preset-chip.active { background: var(--accent); color: #fff5e6; border-color: var(--accent); }
+/* LLM 供应商下拉选择器（v0.1.7：按已添加供应商分组） */
+.llm-picker { position: relative; margin-top: 10px; max-width: 480px; }
+.llm-trigger { width: 100%; display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px; font-size: 12px; font-weight: 600; }
+.llm-trigger .chev { transition: transform .15s; }
+.llm-trigger[aria-expanded="true"] .chev { transform: rotate(180deg); }
+.llm-dropdown { position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 50;
+  max-height: 360px; overflow-y: auto; background: var(--paper); border: 1px solid var(--border);
+  border-radius: 6px; box-shadow: 0 6px 18px rgba(0,0,0,.08); padding: 4px; }
+.llm-dropdown[hidden] { display: none; }
+.llm-group + .llm-group { border-top: 1px solid var(--border); margin-top: 2px; padding-top: 4px; }
+.llm-group-header { font-size: 10px; font-weight: 800; color: var(--text-muted);
+  letter-spacing: .04em; padding: 6px 10px 4px; text-transform: uppercase; }
+.llm-option { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  padding: 7px 10px; border: 0; background: transparent; cursor: pointer; font: 600 12px var(--ui);
+  color: var(--ink); border-radius: 4px; }
+.llm-option:hover { background: var(--hover-row); }
+.llm-option.selected { background: rgba(176,141,87,.15); color: var(--accent-dark); }
+.llm-option .check { margin-left: auto; color: var(--accent); font-weight: 800; }
+.llm-empty { padding: 16px 12px; text-align: center; color: var(--text-muted); font-size: 12px; }
 .llm-status {
   margin-top: 8px; padding: 6px 10px; font-size: 11px; font-weight: 700;
   border-radius: 4px; display: none;
@@ -632,43 +652,21 @@ setTimeout(function(){try{window.parent.postMessage({source:'hana-plugin',type:'
 
           <div class="llm-settings">
             <div class="llm-settings-head">
-              <span>AI 总结 / 翻译 设置</span>
+              <span>AI 总结 / 翻译 供应商</span>
               <button class="btn small" id="llmTestBtn">测试连接</button>
             </div>
             <div class="llm-status" id="llmStatus"></div>
-            <div class="llm-preset" id="llmPresets">
-              <span style="font-size:11px;color:var(--text-muted);font-weight:700;width:100%">已保存的 LLM 配置（点击切换）：</span>
+            <div class="llm-note" style="margin-top:0">凭据由 Hanako 宿主自动管理（你在 HanaAgent 设置里已添加的供应商），插件直接调用，Key 不在前端。下方下拉只列这些「已添加供应商」下的模型。</div>
+            <div class="llm-picker">
+              <button type="button" class="btn llm-trigger" id="llmTrigger">
+                <span id="llmTriggerLabel">请选择 LLM 供应商</span>
+                <svg class="chev" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
+              <div class="llm-dropdown" id="llmDropdown" hidden></div>
             </div>
-            <form class="llm-form" id="llmForm">
-              <div class="llm-note" style="margin-top:0">API 地址与 Key 由插件自动从 Hanako 宿主 / agent 配置读取，无需手动填写。页面加载时会自动检测可用配置。</div>
-              <div class="llm-row">
-                <label>配置名称</label>
-                <input type="text" id="llmName" readonly placeholder="自动生成">
-              </div>
-              <div class="llm-row">
-                <label>供应商 (Provider)</label>
-                <input type="text" id="llmProvider" readonly placeholder="自动检测">
-              </div>
-              <div class="llm-row">
-                <label>API 地址 (Base URL)</label>
-                <input type="text" id="llmBaseUrl" readonly placeholder="自动从 Hanako 读取，无需填写">
-              </div>
-              <div class="llm-row">
-                <label>模型名称</label>
-                <input type="text" id="llmModel" readonly placeholder="自动检测">
-              </div>
-              <div class="llm-row">
-                <label>模型名称</label>
-                <input type="text" id="llmModel" placeholder="例如 gpt-4o-mini, qwen2.5:7b, deepseek-chat">
-              </div>
-              <div class="llm-row" style="flex-direction:row;align-items:center;gap:10px;margin-top:6px;flex-wrap:wrap">
-                <button type="button" class="btn primary small" id="llmSaveBtn">设为当前</button>
-                <button type="button" class="btn small" id="llmDetectBtn">重新检测</button>
-                <button type="button" class="btn small danger" id="llmDeleteBtn" style="display:none">删除当前</button>
-                <button type="button" class="btn small" id="llmClearBtn">清除全部</button>
-              </div>
-            </form>
-            <div class="llm-note" id="llmActiveNote"></div>
+            <div style="display:flex;gap:6px;margin-top:8px">
+              <button class="btn small" id="llmDetectBtn">刷新</button>
+            </div>
           </div>
 
           <div class="llm-settings" style="margin-top:16px">
@@ -1865,221 +1863,129 @@ window.updateAccountFields = function () {
   };
 })();
 
-/* ── LLM 设置管理（多配置支持）── */
-var LLM_STORAGE_KEY = 'hanako-mail-llm-configs';
-var _activeLLMId = null;  // 当前编辑/选中的配置 id
+/* ── LLM 供应商下拉选择（v0.1.7：按已添加供应商分组）── */
+// 存当前选中的 provider + model（凭据全部由 Hanako 宿主服务端管理，前端永存/发 Key）。
+var LLM_KEY = 'hanako-mail-llm-current';
+var _llmItems = []; // detectLlm 缓存的最新检测项
 
-// 取全部配置（数组），并清洗旧版本遗留的明文 apiKey（绝不存/发 key）
-function getLlmConfigs() {
-  try {
-    var arr = JSON.parse(localStorage.getItem(LLM_STORAGE_KEY));
-    if (!Array.isArray(arr)) return [];
-    var dirty = false;
-    arr.forEach(function (c) {
-      if (c && c.apiKey) { delete c.apiKey; dirty = true; }
-    });
-    if (dirty) localStorage.setItem(LLM_STORAGE_KEY, JSON.stringify(arr));
-    return arr;
-  } catch (e) { return []; }
-}
-// 取当前激活配置
 function getLlmConfig() {
-  var cfgs = getLlmConfigs();
-  if (!cfgs.length) return null;
-  return cfgs.find(function (c) { return c.id === _activeLLMId; }) || cfgs[cfgs.length - 1];
-}
-function _genId(prefix) {
-  return (prefix || 'cfg') + '-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
-}
-// 保存/更新当前配置（upsert）
-function saveLlmConfig(cfg) {
   try {
-    var cfgs = getLlmConfigs();
-    if (_activeLLMId) {
-      var idx = cfgs.findIndex(function (c) { return c.id === _activeLLMId; });
-      if (idx >= 0) { cfgs[idx] = cfg; }
-      else { cfgs.push(cfg); }
-    } else {
-      cfgs.push(cfg);
-    }
-    localStorage.setItem(LLM_STORAGE_KEY, JSON.stringify(cfgs));
-    _activeLLMId = cfg.id;
-    return true;
-  } catch (e) { return false; }
+    var c = JSON.parse(localStorage.getItem(LLM_KEY) || 'null');
+    return c && c.provider && c.model ? c : null;
+  } catch (e) { return null; }
 }
-function deleteLlmConfig(id) {
-  var cfgs = getLlmConfigs().filter(function (c) { return c.id !== id; });
-  localStorage.setItem(LLM_STORAGE_KEY, JSON.stringify(cfgs));
-  if (_activeLLMId === id) _activeLLMId = cfgs.length ? cfgs[cfgs.length - 1].id : null;
+function setLlmConfig(c) {
+  if (c && c.provider && c.model) localStorage.setItem(LLM_KEY, JSON.stringify(c));
+  else localStorage.removeItem(LLM_KEY);
 }
-function populateLlmForm(cfg) {
-  if (!cfg) {
-    document.getElementById('llmName').value = '';
-    document.getElementById('llmProvider').value = '';
-    document.getElementById('llmBaseUrl').value = '';
-    document.getElementById('llmModel').value = '';
-    document.getElementById('llmActiveNote').textContent = '';
-    document.getElementById('llmDeleteBtn').style.display = 'none';
+// 渲染触发器按钮 + 下拉内容（按 provider 分组）
+function renderLlmTrigger() {
+  var lbl = document.getElementById('llmTriggerLabel');
+  var cur = getLlmConfig();
+  if (cur) lbl.textContent = cur.provider + ' · ' + cur.model;
+  else lbl.textContent = _llmItems.length ? '请选择 LLM 供应商' : '无可用供应商（请在 HanaAgent 设置里添加）';
+  renderLlmDropdown();
+}
+function renderLlmDropdown() {
+  var dd = document.getElementById('llmDropdown');
+  if (!_llmItems.length) {
+    dd.innerHTML = '<div class="llm-empty">未检测到已添加的供应商<br>请在 HanaAgent 全局设置里添加 LLM 供应商</div>';
     return;
   }
-  document.getElementById('llmName').value = cfg.name || '';
-  document.getElementById('llmProvider').value = cfg.provider || '';
-  document.getElementById('llmBaseUrl').value = cfg.baseUrl || '';
-  document.getElementById('llmModel').value = cfg.model || '';
-  document.getElementById('llmDeleteBtn').style.display = cfg.id ? '' : 'none';
-  // 来源提示
-  var note = document.getElementById('llmActiveNote');
-  if (cfg.note) {
-    var parts = [cfg.note];
-    if (cfg.needsKey) parts.push('<span class="warn">需补全 API Key</span>');
-    if (cfg.needsBaseUrl) parts.push('<span class="warn">需补全 Base URL（agnes 等内置供应商请填其网关地址）</span>');
-    note.innerHTML = parts.join(' ｜ ');
-  } else {
-    note.textContent = '';
-  }
-}
-// 渲染芯片列表
-function renderLlmChips() {
-  var container = document.getElementById('llmPresets');
-  // 清掉旧芯片（保留第一个说明 span）
-  container.querySelectorAll('.preset-chip').forEach(function (c) { c.remove(); });
-  var cfgs = getLlmConfigs();
-  if (!cfgs.length) {
-    var hint = document.createElement('span');
-    hint.style.cssText = 'font-size:11px;color:var(--text-muted);width:100%';
-    hint.textContent = '（暂无保存的配置，填写后点"保存配置"添加）';
-    container.appendChild(hint);
-    return;
-  }
-  cfgs.forEach(function (cfg) {
-    var chip = document.createElement('button');
-    chip.type = 'button';
-    chip.className = 'preset-chip' + (cfg.id === _activeLLMId ? ' active' : '');
-    var chipLabel = cfg.name || cfg.model || cfg.provider || '未命名配置';
-    if (!cfg.name && cfg.baseUrl) {
-      chipLabel = (cfg.model || '') + '@' + String(cfg.baseUrl).replace(/^https?:\/\//, '').split('/')[0];
-    }
-    chip.textContent = chipLabel;
-    chip.dataset.id = cfg.id;
-    chip.addEventListener('click', function () {
-      _activeLLMId = cfg.id;
-      populateLlmForm(cfg);
-      renderLlmChips();
+  var cur = getLlmConfig();
+  var byP = {};
+  for (var i = 0; i < _llmItems.length; i++) (byP[_llmItems[i].provider] = byP[_llmItems[i].provider] || []).push(_llmItems[i]);
+  var html = '';
+  Object.keys(byP).sort().forEach(function (pid) {
+    html += '<div class="llm-group"><div class="llm-group-header">' + esc(pid) + '</div>';
+    byP[pid].forEach(function (it) {
+      var sel = cur && cur.provider === it.provider && cur.model === it.model;
+      html += '<button type="button" class="llm-option' + (sel ? ' selected' : '') + '" data-provider="' + esc(it.provider) + '" data-model="' + esc(it.model) + '">' +
+        esc(it.model) + (sel ? '<span class="check">✓</span>' : '') + '</button>';
     });
-    container.appendChild(chip);
+    html += '</div>';
   });
+  dd.innerHTML = html;
+}
+function chooseLlm(provider, model) {
+  setLlmConfig({ provider: provider, model: model });
+  closeLlmDropdown();
+  renderLlmTrigger();
+  showLlmStatus('ok', '已选择 ' + provider + ' · ' + model);
+}
+function toggleLlmDropdown() {
+  var trig = document.getElementById('llmTrigger');
+  var dd = document.getElementById('llmDropdown');
+  var opening = dd.hidden;
+  dd.hidden = !opening;
+  trig.setAttribute('aria-expanded', opening ? 'true' : 'false');
+  if (opening) renderLlmDropdown();
+}
+function closeLlmDropdown() {
+  var dd = document.getElementById('llmDropdown');
+  var trig = document.getElementById('llmTrigger');
+  if (dd) dd.hidden = true;
+  if (trig) trig.setAttribute('aria-expanded', 'false');
 }
 
-// 页面加载时恢复列表
-(function () {
-  var cfgs = getLlmConfigs();
-  if (cfgs.length) {
-    _activeLLMId = cfgs[cfgs.length - 1].id;
-    populateLlmForm(cfgs[cfgs.length - 1]);
-  }
-  renderLlmChips();
-})();
+// 页面加载时恢复当前选择
+renderLlmTrigger();
 
-// 设为当前（保存选中配置为默认，配置值来自自动检测，无需手填）
-document.getElementById('llmSaveBtn').onclick = function () {
-  var cfg = getLlmConfig();
-  if (!cfg || (!cfg.agentId && !cfg.providerId && !cfg.model)) {
-    showLlmStatus('err', '没有可保存的配置：请先点"重新检测"选择 Hanako 中已有的模型');
-    return;
-  }
-  // 若无显示名则自动生成
-  var label = cfg.name || cfg.model || cfg.provider || '自动配置';
-  saveLlmConfig(cfg);
-  renderLlmChips();
-  toast('已设为当前 LLM 配置：' + label);
-};
-
-// 删除当前配置
-document.getElementById('llmDeleteBtn').onclick = function () {
-  if (!_activeLLMId) return;
-  if (!confirm('确定删除当前选中的 LLM 配置吗？')) return;
-  deleteLlmConfig(_activeLLMId);
-  var cfgs = getLlmConfigs();
-  if (cfgs.length) { _activeLLMId = cfgs[cfgs.length - 1].id; populateLlmForm(cfgs[cfgs.length - 1]); }
-  else { populateLlmForm(null); }
-  renderLlmChips();
-  toast('已删除该配置');
-};
-
-// 检测 Hanako 配置（追加到列表，不覆盖已有），抽成函数供页面加载时自动调用
+// 检测已添加供应商（v0.1.7）
 function detectLlm() {
   return api('/llm-detect', { method: 'POST' }).then(function (r) { return r.json(); }).then(function (d) {
     if (!d.ok || !Array.isArray(d.data) || !d.data.length) {
-      showLlmStatus('err', '未检测到 Hanako LLM 配置：请在 Hanako 设置中配置聊天供应商后重试');
+      _llmItems = [];
+      renderLlmTrigger();
+      showLlmStatus('err', '未检测到已添加的供应商：请在 HanaAgent 全局设置里添加 LLM 供应商');
       return false;
     }
-    var cfgs = getLlmConfigs();
-    // 去重：优先按 agentId+model（同 provider 不同 agent 不应被合并）
-    d.data.forEach(function (item) {
-      var key = item.agentId ? ('agent:' + item.agentId + ':' + item.model) : ('env:' + item.baseUrl + ':' + item.model);
-      var exists = cfgs.some(function (c) {
-        var ck = c.agentId ? ('agent:' + c.agentId + ':' + c.model) : ('env:' + c.baseUrl + ':' + c.model);
-        return ck === key;
-      });
-      if (!exists) {
-        cfgs.push({
-          id: _genId('detected'),
-          name: item.name || '',
-          provider: item.provider || '',
-          providerId: item.provider || '',
-          agentId: item.agentId || '',
-          baseUrl: item.baseUrl || '',
-          model: item.model || '',
-          note: item.note || '',
-          fromHost: !!item.fromHost
-        });
-      }
-    });
-    localStorage.setItem(LLM_STORAGE_KEY, JSON.stringify(cfgs));
-    var last = cfgs[cfgs.length - 1];
-    _activeLLMId = last.id;
-    populateLlmForm(last);
-    renderLlmChips();
-    var msg = '检测到 ' + d.data.length + ' 个 LLM 配置，已自动加载';
-    if (Array.isArray(d.addedModelsKeys) && d.addedModelsKeys.length) {
-      msg += '；全局凭据供应商: ' + d.addedModelsKeys.join(', ');
+    _llmItems = d.data;
+    // 校验当前选择是否仍在列表里（若供应商被移除则清掉旧选择）
+    var cur = getLlmConfig();
+    if (cur && !_llmItems.find(function (it) { return it.provider === cur.provider && it.model === cur.model; })) {
+      setLlmConfig(null);
     }
-    showLlmStatus('ok', msg + '。点击列表项切换，或直接使用当前项做总结/翻译');
+    renderLlmTrigger();
+    showLlmStatus('ok', '已加载 ' + d.data.length + ' 个模型（来自已添加供应商），请选择');
     return true;
   }).catch(function () { showLlmStatus('err', '检测失败'); return false; });
 }
 
-document.getElementById('llmDetectBtn').onclick = function () {
-  toast('正在检测 Hanako LLM 配置…');
+// 触发器点击：展开/收起下拉
+document.getElementById('llmTrigger').addEventListener('click', function (e) {
+  e.stopPropagation();
+  toggleLlmDropdown();
+});
+// 下拉项点击
+document.getElementById('llmDropdown').addEventListener('click', function (e) {
+  var btn = e.target.closest('.llm-option');
+  if (!btn) return;
+  e.stopPropagation();
+  chooseLlm(btn.dataset.provider, btn.dataset.model);
+});
+// 点击外部关闭下拉
+document.addEventListener('click', function (e) {
+  var p = document.querySelector('.llm-picker');
+  if (p && !p.contains(e.target)) closeLlmDropdown();
+});
+// 刷新按钮
+document.getElementById('llmDetectBtn').addEventListener('click', function () {
+  toast('正在检测已添加供应商…');
   detectLlm();
-};
+});
 
-// 清除全部
-document.getElementById('llmClearBtn').onclick = function () {
-  if (!confirm('确定清除全部 LLM 配置吗？')) return;
-  localStorage.removeItem(LLM_STORAGE_KEY);
-  _activeLLMId = null;
-  document.getElementById('llmName').value = '';
-  document.getElementById('llmProvider').value = '';
-  document.getElementById('llmBaseUrl').value = '';
-  document.getElementById('llmModel').value = '';
-  document.getElementById('llmActiveNote').textContent = '';
-  renderLlmChips();
-  showLlmStatus('', '');
-  toast('已清除全部 LLM 配置');
-};
-
-// 测试连接（用当前激活配置；key 由服务端回源，前端不携带）
+// 测试连接（用当前选择；key 由服务端回源，前端不携带）
 document.getElementById('llmTestBtn').onclick = function () {
   var cfg = getLlmConfig();
-  if (!cfg || (!cfg.agentId && !cfg.providerId && !cfg.model)) {
-    showLlmStatus('err', '请先检测并选择 LLM 配置（无需手动填写）');
+  if (!cfg || !cfg.provider || !cfg.model) {
+    showLlmStatus('err', '请先在下拉中选择 LLM 供应商和模型');
     return;
   }
   showLlmStatus('', '测试中…');
   api('/llm-test', {
     method: 'POST',
-    body: JSON.stringify({ agentId: cfg.agentId || '', providerId: cfg.providerId || '', baseUrl: cfg.baseUrl || '', model: cfg.model || '' })
+    body: JSON.stringify({ providerId: cfg.provider, model: cfg.model })
   }).then(function (r) { return r.json(); }).then(function (d) {
     if (d && d.ok) showLlmStatus('ok', '连接成功！模型: ' + (d.data || cfg.model));
     else showLlmStatus('err', '连接失败：' + (d && d.error ? d.error : '未知错误'));

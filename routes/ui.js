@@ -293,7 +293,7 @@ async function buildLlmOpts(ctx, llmCfg, body = {}) {
   // 2) 宿主聊天供应商（providerId + model 引用，凭据由宿主管理）
   try {
     const resolved = await resolveLlmConfig(ctx, {
-      providerId: cfg.providerId || body?.providerId,
+      providerId: cfg.providerId || cfg.provider || body?.providerId,
       model: cfg.model || body?.model,
     });
     if (resolved.ok) return { baseUrl: resolved.baseUrl, apiKey: resolved.apiKey, model: resolved.model, api: resolved.api };
@@ -1013,131 +1013,65 @@ export default function (app, ctx) {
     minimax: "https://api.minimax.chat/v1",
   };
 
-  // 检测 Hanako per-agent LLM 配置（两层结构）
-  //   1) 每个 agent: ~/.hanako/agents/<agent-id>/config.yaml  (api.provider / models.chat ...)
-  //   2) 全局供应商凭据: ~/.hanako/added-models.yaml  (跨 agent 共享，通常已迁移到设置页)
+  // 检测 Hanako「已添加的供应商」下的 chat 模型（v0.1.7 收紧）
+  // 来源：HanaAgent 全局设置里用户手动配过 Key 的供应商（~/.hanako/added-models.yaml 的 keys，
+  // 排除 _migrated），每个供应商下的 chat 模型来自宿主 provider:models-by-type。
+  // 凭据由 provider:credentials 服务端回源（前端不接触明文 Key）。
   const postLlmDetect = async (c) => {
+    const home = os.homedir();
     const detected = [];
 
-    // 0) Hanako 宿主配置的聊天供应商（真实可用，凭据由宿主管理，无需前端填 key）
-    //    这是对照 hana-code-atlas（代码图谱）修正的核心来源。
-    try {
-      const host = await listChatModels(ctx);
-      if (host.ok) {
-        for (const p of host.providers) {
-          for (const m of p.models) {
-            detected.push({
-              name: `宿主: ${p.id} · ${m}`,
-              provider: p.id,
-              model: m,
-              baseUrl: "", // 凭据走 provider:credentials，不在此暴露明文
-              apiKey: "",
-              fromHost: true,
-              note: "来源: Hanako 宿主 (provider:models-by-type)",
-              needsKey: false,
-              needsBaseUrl: false,
-            });
-          }
-        }
-      }
-    } catch {}
-
-    const home = os.homedir();
-
-    // 1) 每个 agent 的独立配置
-    const agentsDir = path.join(home, ".hanako", "agents");
-    try {
-      if (fs.existsSync(agentsDir)) {
-        const agentIds = fs.readdirSync(agentsDir).filter((name) => {
-          try { return fs.statSync(path.join(agentsDir, name)).isDirectory(); } catch { return false; }
-        });
-        for (const agentId of agentIds) {
-          const cfgPath = path.join(agentsDir, agentId, "config.yaml");
-          if (!fs.existsSync(cfgPath)) continue;
-          try {
-            const cfg = parseSimpleYaml(fs.readFileSync(cfgPath, "utf-8"));
-            // 真实结构：api.provider 可能是字符串或空对象 {}；models.chat 是 { id, provider }
-            const apiProvider = asStr(cfg?.api?.provider || cfg?.provider || cfg?.llm?.provider).toLowerCase();
-            const chatObj = cfg?.models?.chat;
-            const chatModel = (chatObj && typeof chatObj === "object")
-              ? asStr(chatObj.id)
-              : (typeof chatObj === "string" ? chatObj : "");
-            const chatProvider = (chatObj && typeof chatObj === "object") ? asStr(chatObj.provider) : "";
-            const utilityModel = (typeof cfg?.models?.utility === "string")
-              ? cfg.models.utility
-              : asStr(cfg?.models?.utility?.id);
-            const embeddingModel = (typeof cfg?.models?.embedding === "string")
-              ? cfg.models.embedding
-              : asStr(cfg?.models?.embedding?.id);
-            if (!apiProvider && !chatModel) continue; // 该 agent 未配置 LLM，跳过
-            // 模型实际由 models.chat.provider 提供；拿不到时用 api.provider 兜底
-            const modelProvider = (chatProvider || apiProvider).toLowerCase();
-            const cfgBaseUrl = cfg?.api?.base_url || cfg?.api?.endpoint || "";
-            const baseUrl = cfgBaseUrl || PROVIDER_PRESETS[modelProvider] || "";
-            const displayProvider = chatProvider || apiProvider;
-            // 直接从 agent 的 config.yaml 提取 api_key（若配置了则自动可用，无需手填）
-            const cfgApiKey = asStr(cfg?.api?.api_key || cfg?.api_key || "").trim();
-            detected.push({
-              name: `Agent: ${agentId}` + (chatModel ? ` · ${chatModel}` : ""),
-              provider: displayProvider,
-              apiProvider,
-              chatProvider,
-              baseUrl,
-              apiKey: cfgApiKey ? cfgApiKey.slice(0, 8) + "****" : "", // 仅返回脱敏占位，真实 key 运行时由 resolveAgentYamlLlm 回源
-              model: chatModel || "",
-              agentId,
-              utilityModel,
-              embeddingModel,
-              note: cfgApiKey ? `来源: ${cfgPath}（已含 API Key，可一键使用）` : `来源: ${cfgPath}`,
-              needsKey: !cfgApiKey,
-              needsBaseUrl: !baseUrl,
-            });
-          } catch {}
-        }
-      }
-    } catch {}
-
-    // 2) 全局供应商凭据（added-models.yaml，通常已迁移到设置页）
-    let addedModelsKeys = [];
+    // 1) 用户已在 HanaAgent 设置里添加的供应商（~/.hanako/added-models.yaml）
+    let addedKeys = [];
     const addedModelsPath = path.join(home, ".hanako", "added-models.yaml");
     try {
       if (fs.existsSync(addedModelsPath)) {
         const am = parseSimpleYaml(fs.readFileSync(addedModelsPath, "utf-8"));
-        addedModelsKeys = Object.keys(am || {}).filter((k) => k !== "_migrated");
+        addedKeys = Object.keys(am || {}).filter((k) => k !== "_migrated");
       }
     } catch {}
 
-    // 3) 环境变量兜底（HANAKO_LLM_* / OPENAI_* / OLLAMA_*）
-    const envChecks = [
-      { name: "环境变量 HANAKO_LLM", provider: (process.env.HANAKO_LLM_BASE_URL || "").includes("deepseek") ? "deepseek" : (process.env.HANAKO_LLM_BASE_URL || "").includes("openai") ? "openai" : "", baseUrl: process.env.HANAKO_LLM_BASE_URL, apiKey: process.env.HANAKO_LLM_API_KEY, model: process.env.HANAKO_LLM_MODEL },
-      { name: "OpenAI 兼容", provider: "openai", baseUrl: process.env.OPENAI_BASE_URL || process.env.OPENAI_API_BASE, apiKey: process.env.OPENAI_API_KEY, model: process.env.OPENAI_MODEL || "gpt-4o-mini" },
-      { name: "Ollama 本地", provider: "ollama", baseUrl: process.env.OLLAMA_HOST || "http://localhost:11434/v1", apiKey: "ollama", model: process.env.OLLAMA_MODEL || "qwen2.5:7b" },
-    ];
-    for (const env of envChecks) {
-      if (env.baseUrl && env.model) {
+    // 2) 宿主 provider:models-by-type（每个 provider 下的 chat 模型）
+    let providerModels = {}; // providerId -> [model, ...]
+    try {
+      const host = await listChatModels(ctx);
+      if (host.ok) {
+        for (const p of (host.providers || [])) {
+          providerModels[p.id] = p.models || [];
+        }
+      }
+    } catch {}
+
+    // 3) 交叉：只输出"已添加供应商"下的模型（不显示未添加的 provider/agent/环境变量）
+    for (const pid of addedKeys) {
+      const models = providerModels[pid] || [];
+      for (const m of models) {
         detected.push({
-          name: env.name + (env.provider ? ` · ${env.provider}` : ""),
-          provider: env.provider || "",
-          baseUrl: env.baseUrl,
-          apiKey: (env.apiKey || "").slice(0, 8) + "****", // 脱敏
-          model: env.model,
-          note: "来源: 环境变量",
-          needsKey: !env.apiKey,
+          id: `host:${pid}:${m}`,
+          name: m,
+          provider: pid,
+          model: m,
+          fromHost: true,
+          configured: true,
+          note: `来源: Hanako 全局设置「已添加供应商 ${pid}」`,
+          needsKey: false,
           needsBaseUrl: false,
         });
       }
     }
 
-    // 去重：优先按 agentId（或 baseUrl+model）
+    // 去重（同 provider+model 防御）
     const seen = new Set();
     const deduped = detected.filter((d) => {
-      const key = d.agentId ? `agent:${d.agentId}:${d.model}` : `env:${d.baseUrl}:${d.model}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
+      const k = `${d.provider}:${d.model}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
       return true;
     });
+    // 按供应商首字母分组排序
+    deduped.sort((a, b) => (a.provider || "").localeCompare(b.provider || "") || a.model.localeCompare(b.model));
 
-    return c.json({ ok: true, data: deduped, addedModelsKeys });
+    return c.json({ ok: true, data: deduped, addedKeys });
   };
 
   // 测试 LLM 连接（发一个简单请求验证可用性）

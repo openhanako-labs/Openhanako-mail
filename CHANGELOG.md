@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.7] — 2026-08-02
+
+### 优化：LLM 配置选择器重做（论坛反馈「自动读取」与实际体验对齐）
+- **后端**（`postLlmDetect` 收紧）：只输出「HanaAgent 全局设置里用户已添加的供应商」下的 chat 模型（`~/.hanako/added-models.yaml` × `provider:models-by-type` 交叉），去掉了之前混入的 agent config.yaml 列表、环境变量兜底、PROVIDER_PRESETS 等冗余来源——原本 20 个杂乱选项收敛为 5-8 个真实可用项。
+- **前端**：LLM 面板从「20 chip + 4 输入框 + 需补全提示」重做为**简洁分组下拉**（按供应商分组：DEEPSEEK / MINIMAX / OPENAI / OPENCODE / 新疆幻域…，每组下平铺模型），触发器按钮显示当前选择。移除：
+  - 整个表单（配置名称/供应商/Base URL/模型名称输入框——前端不收 Key）
+  - 「已保存的 LLM 配置（点击切换）」chip 列表
+  - 「设为当前 / 重新检测 / 删除当前 / 清除全部」按钮（点击下拉项即设当前，刷新按钮替代重新检测）
+  - 红色「需补全 API Key / Base URL」误导提示（来源已只有已添加供应商，Key 一定可用）
+- `buildLlmOpts` 兼容 `cfg.provider` 字段（v0.1.7 前端简化为 `{provider, model}`）。
+- 旧 localStorage `hanako-mail-llm-configs`（数组格式）不再使用；当前选择存为 `hanako-mail-llm-current`（`{provider, model}`）。
+
 ## [0.1.6] — 2026-08-02
 
 ### 功能：实时收件 + 系统通知（论坛反馈落地）
