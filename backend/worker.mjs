@@ -20,6 +20,7 @@
 
 import { createInterface } from "node:readline";
 import * as inbox from "./inbox.mjs";
+import { closeAll } from "./imap-backend.mjs";
 
 const rl = createInterface({ input: process.stdin, terminal: false });
 
@@ -72,8 +73,9 @@ rl.on("line", (line) => {
   );
 });
 
-// 优雅退出
+// 优雅退出（关闭 IMAP/SMTP 连接池后退出）
 function shutdown(code = 0) {
+  try { closeAll(); } catch { /* ignore */ }
   process.exit(code);
 }
 process.on("SIGTERM", () => shutdown(0));

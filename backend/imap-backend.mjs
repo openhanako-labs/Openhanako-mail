@@ -196,6 +196,147 @@ function closeImap(imap) {
   try { imap.end(); } catch {}
 }
 
+// ── IMAP 连接池（常驻 worker 下复用 TLS 连接） ──────────
+// key: email。连接建立时 config 已固化（user/pass/host/port 读入 Imap 构造），
+// 之后不再读 process.env，故不同账号并发安全；
+// - 凭据变更：acquire 时发现 password 与连接建立时不一致 → 销毁重建
+// - busy 期间同账号请求排队（单连接/账号，避免命令交错）
+// - 出错即销毁（复用可能损坏的会话）；空闲超时回收；closeAllImap 供卸载/退出调用
+const CONN_POOL = new Map();
+const IMAP_IDLE_MS = 60000;
+
+function poolEntry(email) {
+  let e = CONN_POOL.get(email);
+  if (!e) {
+    e = { conn: null, busy: false, lastUsed: 0, password: "", queue: [] };
+    CONN_POOL.set(email, e);
+  }
+  return e;
+}
+
+function destroyConn(entry) {
+  if (entry && entry.conn) {
+    try { entry.conn.end(); } catch {}
+    entry.conn = null;
+  }
+}
+
+function connAlive(conn) {
+  return !!(conn && conn.state && conn.state !== "disconnected");
+}
+
+function poolAcquire(email) {
+  return new Promise((resolve, reject) => {
+    const entry = poolEntry(email);
+    const config = getImapConfig(email);
+    // 凭据变更 → 重建连接（账号编辑后自动生效）
+    if (entry.conn && entry.password && config.password !== entry.password) {
+      destroyConn(entry);
+    }
+    if (entry.busy) {
+      // 同账号并发 → 排队；唤醒时递归重试（重新走完整状态检查）
+      entry.queue.push(() => poolAcquire(email).then(resolve, reject));
+      return;
+    }
+    entry.busy = true; // 占位：连接建立中或复用中，防止并发重复建连
+    if (connAlive(entry.conn)) {
+      entry.lastUsed = Date.now();
+      entry.password = config.password;
+      resolve(entry);
+      return;
+    }
+    connectImap(config)
+      .then((imap) => {
+        entry.conn = imap;
+        entry.lastUsed = Date.now();
+        entry.password = config.password;
+        resolve(entry);
+      })
+      .catch((err) => {
+        entry.busy = false;
+        const next = entry.queue.shift();
+        if (next) next(); // 唤醒一个排队者重新尝试
+        reject(err);
+      });
+  });
+}
+
+function poolRelease(entry, keep = true) {
+  if (!keep) destroyConn(entry);
+  entry.busy = false;
+  entry.lastUsed = Date.now();
+  const next = entry.queue.shift();
+  if (next) next(); // 唤醒者内部会重新 poolAcquire，正确复用/重建
+}
+
+// 空闲回收（惰性，30s 周期）。unref：CLI 模式（一次性命令）下不阻止进程退出。
+const _idleTimer = setInterval(() => {
+  const now = Date.now();
+  for (const [email, entry] of CONN_POOL) {
+    if (!entry.busy && entry.conn && now - entry.lastUsed > IMAP_IDLE_MS) {
+      destroyConn(entry);
+      if (entry.queue.length === 0) CONN_POOL.delete(email);
+    }
+  }
+}, 30000);
+_idleTimer.unref?.();
+
+/** 统一执行器：acquire → 执行 → release（出错销毁连接）。 */
+async function withImap(email, fn) {
+  const entry = await poolAcquire(email);
+  let keep = true;
+  try {
+    return await fn(entry.conn);
+  } catch (e) {
+    keep = false;
+    throw e;
+  } finally {
+    poolRelease(entry, keep);
+  }
+}
+
+/** 关闭全部 IMAP 连接（worker 退出 / 插件卸载时调用）。 */
+export function closeAllImap() {
+  for (const [, entry] of CONN_POOL) destroyConn(entry);
+  CONN_POOL.clear();
+}
+
+// ── SMTP transporter 池（nodemailer pool 模式，复用 TLS 连接） ──
+const SMTP_POOL = new Map();
+function getSmtpTransporter(email) {
+  const cfg = getSmtpConfig(email);
+  const existing = SMTP_POOL.get(email);
+  if (existing) {
+    const meta = existing._mailPool;
+    if (meta && meta.host === cfg.host && meta.port === cfg.port && meta.secure === !!cfg.secure && meta.pass === cfg.auth.pass) {
+      return existing.t;
+    }
+    // 配置/凭据变更 → 重建
+    try { existing.t.close(); } catch {}
+    SMTP_POOL.delete(email);
+  }
+  const t = nodemailer.createTransport({ ...cfg, pool: true, maxConnections: 2, maxMessages: 200 });
+  SMTP_POOL.set(email, {
+    t,
+    _mailPool: { host: cfg.host, port: cfg.port, secure: !!cfg.secure, pass: cfg.auth.pass },
+  });
+  return t;
+}
+
+/** 关闭全部 SMTP 连接池。 */
+export function closeAllSmtp() {
+  for (const [, entry] of SMTP_POOL) {
+    try { entry.t.close(); } catch {}
+  }
+  SMTP_POOL.clear();
+}
+
+/** 统一关闭（IMAP + SMTP），供 worker 退出 / 插件卸载调用。 */
+export function closeAll() {
+  closeAllImap();
+  closeAllSmtp();
+}
+
 // ── 已发送副本保存 ─────────────────────────────────────
 
 function findSentFolderName(boxes, delimiter) {
@@ -239,27 +380,24 @@ function buildRawMessage(mailOptions) {
 }
 
 async function appendToSent(email, mailOptions) {
-  let imap;
   try {
     const raw = await buildRawMessage(mailOptions);
-    const config = getImapConfig(email);
-    imap = await connectImap(config);
-    const boxes = await new Promise((resolve, reject) => {
-      imap.getBoxes((err, b) => (err ? reject(err) : resolve(b)));
-    });
-    const delim = imap.delimiter || config.delimiter || "/";
-    const sentName = findSentFolderName(boxes, delim) || "Sent";
-    await new Promise((resolve, reject) => {
-      imap.append(raw, { mailbox: sentName, flags: ["\\Seen"] }, (err) => {
-        if (err) return reject(err);
-        resolve();
+    await withImap(email, async (imap) => {
+      const boxes = await new Promise((resolve, reject) => {
+        imap.getBoxes((err, b) => (err ? reject(err) : resolve(b)));
+      });
+      const delim = imap.delimiter || "/";
+      const sentName = findSentFolderName(boxes, delim) || "Sent";
+      await new Promise((resolve, reject) => {
+        imap.append(raw, { mailbox: sentName, flags: ["\\Seen"] }, (err) => {
+          if (err) return reject(err);
+          resolve();
+        });
       });
     });
   } catch (e) {
     // 保存到「已发送」失败不应影响已发出的邮件，仅记录告警
     console.warn("[imap-backend] appendToSent failed:", e && e.message);
-  } finally {
-    if (imap) closeImap(imap);
   }
 }
 
@@ -267,10 +405,7 @@ async function appendToSent(email, mailOptions) {
 
 export async function listMessages(email, options = {}) {
   const { limit = 20, folder = "INBOX" } = options;
-  const config = getImapConfig(email);
-
-  const imap = await connectImap(config);
-  try {
+  return await withImap(email, async (imap) => {
     await openBox(imap, folder);
     const uids = await searchMessages(imap, ["ALL"]);
     const recent = uids.slice(Math.max(0, uids.length - Math.max(limit, 50)));
@@ -278,15 +413,11 @@ export async function listMessages(email, options = {}) {
     const parsed = await parseMessages(rawMessages);
     parsed.sort((a, b) => (b.date || 0) - (a.date || 0));
     return parsed.slice(0, limit);
-  } finally {
-    closeImap(imap);
-  }
+  });
 }
 
 export async function readMessage(email, messageId, options = {}) {
-  const config = getImapConfig(email);
-  const imap = await connectImap(config);
-  try {
+  return await withImap(email, async (imap) => {
     await openBox(imap, options.folder || "INBOX");
     const uid = parseInt(messageId, 10);
     if (isNaN(uid)) throw new Error(`invalid messageId: ${messageId}`);
@@ -294,16 +425,12 @@ export async function readMessage(email, messageId, options = {}) {
     if (rawMessages.length === 0) throw new Error("message not found");
     const parsed = await parseMessages(rawMessages);
     return parsed[0] || { error: "message not found" };
-  } finally {
-    closeImap(imap);
-  }
+  });
 }
 
 export async function deleteMessage(email, messageId, options = {}) {
-  const config = getImapConfig(email);
   const folder = options.folder || "INBOX";
-  const imap = await connectImap(config);
-  try {
+  return await withImap(email, async (imap) => {
     // 两步删除：在垃圾箱内删除 = 永久删；其它文件夹删除 = 移到垃圾箱
     const isTrash = await isTrashFolder(email, folder);
     if (!isTrash) {
@@ -325,9 +452,7 @@ export async function deleteMessage(email, messageId, options = {}) {
       imap.expunge((err) => (err ? reject(err) : resolve()));
     });
     return { deleted: true, uid };
-  } finally {
-    closeImap(imap);
-  }
+  });
 }
 
 async function isTrashFolder(email, folderName) {
@@ -348,8 +473,7 @@ export async function sendMail(email, options) {
   if (!subject) throw new Error("sendMail: 'subject' is required");
   if (!body) throw new Error("sendMail: 'body' is required");
 
-  const smtpConfig = getSmtpConfig(email);
-  const transporter = nodemailer.createTransport(smtpConfig);
+  const transporter = getSmtpTransporter(email);
 
   const mailOptions = {
     from: email,
@@ -367,8 +491,8 @@ export async function sendMail(email, options) {
     }));
   }
 
+  // pool 模式：连接复用，无需每次手动 close
   const info = await transporter.sendMail(mailOptions);
-  transporter.close();
 
   // 保存副本到「已发送」文件夹（失败不影响已发送动作）
   await appendToSent(email, mailOptions);
@@ -383,8 +507,7 @@ export async function replyToMail(email, messageId, options = {}) {
   const { body, html = false, cc, attachments = [] } = options;
   if (!body) throw new Error("replyToMail: 'body' is required");
 
-  const smtpConfig = getSmtpConfig(email);
-  const transporter = nodemailer.createTransport(smtpConfig);
+  const transporter = getSmtpTransporter(email);
 
   const mailOptions = {
     from: email,
@@ -404,7 +527,6 @@ export async function replyToMail(email, messageId, options = {}) {
   }
 
   const info = await transporter.sendMail(mailOptions);
-  transporter.close();
 
   // 保存副本到「已发送」文件夹（失败不影响已发送动作）
   await appendToSent(email, mailOptions);
@@ -414,9 +536,7 @@ export async function replyToMail(email, messageId, options = {}) {
 
 export async function downloadAttachment(email, messageId, partId, outputDir, folder) {
   if (!outputDir) throw new Error("downloadAttachment: 'outputDir' is required");
-  const config = getImapConfig(email);
-  const imap = await connectImap(config);
-  try {
+  return await withImap(email, async (imap) => {
     await openBox(imap, folder || "INBOX");
     const uid = parseInt(messageId, 10);
     if (isNaN(uid)) throw new Error(`invalid messageId: ${messageId}`);
@@ -448,9 +568,7 @@ export async function downloadAttachment(email, messageId, partId, outputDir, fo
       size: att.size || att.content.length,
       path: outPath,
     };
-  } finally {
-    closeImap(imap);
-  }
+  });
 }
 
 export async function forwardMail(email, messageId, options = {}) {
@@ -460,8 +578,7 @@ export async function forwardMail(email, messageId, options = {}) {
   const original = await readMessage(email, messageId);
   if (!original || original.error) throw new Error(`forward: original message not found (${messageId})`);
 
-  const smtpConfig = getSmtpConfig(email);
-  const transporter = nodemailer.createTransport(smtpConfig);
+  const transporter = getSmtpTransporter(email);
 
   const finalSubject = subject || (original.subject ? `Fwd: ${original.subject}` : "Fwd:");
 
@@ -496,7 +613,6 @@ export async function forwardMail(email, messageId, options = {}) {
   }
 
   const info = await transporter.sendMail(mailOptions);
-  transporter.close();
 
   // 保存副本到「已发送」文件夹（失败不影响已发送动作）
   await appendToSent(email, mailOptions);
@@ -505,9 +621,7 @@ export async function forwardMail(email, messageId, options = {}) {
 }
 
 export async function listFolders(email) {
-  const config = getImapConfig(email);
-  const imap = await connectImap(config);
-  try {
+  return await withImap(email, async (imap) => {
     const boxList = await new Promise((resolve, reject) => {
       imap.getBoxes((err, boxes) => {
         if (err) return reject(err);
@@ -531,9 +645,7 @@ export async function listFolders(email) {
       });
     });
     return boxList;
-  } finally {
-    closeImap(imap);
-  }
+  });
 }
 
 function mapType(name) {
@@ -547,9 +659,7 @@ function mapType(name) {
 }
 
 export async function markRead(email, messageId, read = true, folder) {
-  const config = getImapConfig(email);
-  const imap = await connectImap(config);
-  try {
+  return await withImap(email, async (imap) => {
     // 修改 flags 需要可写打开
     await openBox(imap, folder || "INBOX", false);
     const uid = parseInt(messageId, 10);
@@ -562,9 +672,7 @@ export async function markRead(email, messageId, read = true, folder) {
       }
     });
     return { status: read ? "read" : "unread" };
-  } finally {
-    closeImap(imap);
-  }
+  });
 }
 
 export async function markSpam(email, messageId, options = {}) {
@@ -576,9 +684,7 @@ export async function markSpam(email, messageId, options = {}) {
 }
 
 export async function moveMessage(email, messageId, targetFid, sourceFolder) {
-  const config = getImapConfig(email);
-  const imap = await connectImap(config);
-  try {
+  return await withImap(email, async (imap) => {
     // 打开"源文件夹"（消息当前所在位置），而非固定 INBOX —— 否则非 INBOX 邮件无法定位 UID，两步删除/标记垃圾会失败
     const srcFolder = sourceFolder || "INBOX";
     // 可写打开：MOVE 不可用时的 COPY+DELETE 回退需要修改源邮件 flags
@@ -606,7 +712,5 @@ export async function moveMessage(email, messageId, targetFid, sourceFolder) {
     });
 
     return { status: "moved", targetFid };
-  } finally {
-    closeImap(imap);
-  }
+  });
 }

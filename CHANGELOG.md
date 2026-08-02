@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.4] — 2026-08-02
+
+### 性能：IMAP / SMTP 连接池
+- **IMAP 连接池**（`backend/imap-backend.mjs`）：per-email 单连接复用（TLS 握手只做一次）。
+  - `poolAcquire` / `poolRelease` + `withImap` 统一执行器：连接建立期间置 busy 占位（防并发重复建连），同账号并发请求排队、唤醒后递归重试；
+  - 凭据变更（acquire 时 password 不一致）自动销毁重建 —— 账号编辑后即时生效；
+  - 操作抛错即销毁连接（不复用可能损坏的会话）；空闲 60s 回收（定时器 `unref`，不阻塞 CLI 模式进程退出）；
+  - `closeAllImap()` / `closeAll()` 导出，worker 退出时优雅关闭。
+- **SMTP transporter 池**：`nodemailer pool: true`（maxConnections 2 / maxMessages 200），send / reply / forward 复用 TLS 连接，配置或凭据变更自动重建。
+- **worker.mjs**：退出时调用 `closeAll()` 关闭全部 IMAP/SMTP 连接。
+- 全部 IMAP/SMTP 操作（list/read/delete/send/reply/forward/download/folders/markRead/markSpam/move/appendToSent）改为池化执行。
+- 验证：连接池算法单测 11 项 PASS（建连/复用/并发排队/凭据变更重建/错误销毁/异账号隔离），全量语法检查通过。
+
 ## [0.1.3] — 2026-08-02
 
 ### 性能重构：常驻 Worker 后端
