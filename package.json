@@ -1,6 +1,6 @@
 {
   "name": "hanako-mail",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "private": true,
   "type": "module",
   "description": "HanaAgent 原生多邮箱聚合插件：IMAP/SMTP + ClawEmail + AgentQQ，支持多账号、文件夹、已读未读、回复、搜索、批量操作与草稿。",

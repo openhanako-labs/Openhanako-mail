@@ -94,7 +94,9 @@ export async function chatCompletion(systemOrMessages, user, opts = {}) {
     throw new Error(`LLM 请求失败 ${res.status}: ${txt.slice(0, 300)}`);
   }
   const data = await res.json();
-  const content = data?.choices?.[0]?.message?.content;
+  // 兼容推理模型（agnes / minimax / 智谱等）：content 可能是空，思考在 reasoning_content
+  const msg = data?.choices?.[0]?.message;
+  const content = msg?.content || msg?.reasoning_content || data?.content?.[0]?.text;
   if (!content) throw new Error("LLM 返回内容为空");
   return content.trim();
 }

@@ -1101,7 +1101,7 @@ export default function (app, ctx) {
       const result = await llm.chatCompletion(
         [{ role: "user", content: "Reply with exactly: OK" }],
         undefined,
-        { baseUrl, apiKey, model, api, max_tokens: 8 }
+        { baseUrl, apiKey, model, api, max_tokens: 200 }
       );
       return c.json({ ok: true, data: result?.model || model });
     } catch (e) {
