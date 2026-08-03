@@ -169,19 +169,17 @@ export async function resolveLlmConfig(ctx, requested = {}) {
         model = (first && typeof first === "object") ? (first.id || "") : String(first);
       }
       if (!model) return { ok: false, error: "llm_model_not_available" };
-      // 验证 requested.model 是否在 catalog.models 中
-      const inCatalog = models.some((m) => (m && typeof m === "object") ? m.id : m === model);
-      if (!requested.model || inCatalog) {
-        return {
-          ok: true,
-          providerId: reqPid,
-          model,
-          baseUrl: p.base_url,
-          apiKey: p.api_key,
-          api: normalizeApi(p.api),
-        };
-      }
-      // requested.model 不在 catalog.models 中 → 落到宿主 bus 兜底
+      // catalog 命中且 base_url+api_key 都拿到 → 信任它直接返回（不再 fallback 到宿主 bus）
+      // 修复 v0.1.11：之前若 requested.model 不在 catalog.models 列表里会跳到 bus 兜底，
+      // 但插件宿主 ctx.bus 多数情况下不可用，导致 hana_bus_unavailable。
+      return {
+        ok: true,
+        providerId: reqPid,
+        model,
+        baseUrl: p.base_url,
+        apiKey: p.api_key,
+        api: normalizeApi(p.api),
+      };
     }
   }
   // 1) fallback: 宿主 bus（ctx.bus.request 拿到模型列表与凭据）
