@@ -158,11 +158,32 @@ function fetchMessages(imap, uids, options = { bodies: "" }) {
   });
 }
 
+function htmlToText(html) {
+  if (!html) return "";
+  // 先剥 <script>/<style>，再去所有标签，最后解码常见 HTML 实体
+  let s = String(html)
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "")
+    .replace(/<\/?[a-z][^>]*>/gi, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+  return s;
+}
+
 async function parseMessages(rawMessages) {
   const results = [];
   for (const msg of rawMessages) {
     try {
       const parsed = await simpleParser(msg.raw);
+      const htmlStr = parsed.html ? (typeof parsed.html === "string" ? parsed.html : parsed.html.content || "") : "";
+      // HTML-only 邮件：text 为空时从 HTML 提取纯文本兜底，供总结/翻译使用（v0.1.15）
+      const text = (parsed.text && parsed.text.trim()) ? parsed.text : htmlToText(htmlStr);
       results.push({
         id: String(msg.uid || msg.seqno),
         uid: msg.uid,
@@ -172,7 +193,7 @@ async function parseMessages(rawMessages) {
         to: parsed.to ? parsed.to.text : "",
         cc: parsed.cc ? parsed.cc.text : "",
         subject: parsed.subject || "",
-        text: parsed.text || "",
+        text,
         html: parsed.html ? { content: parsed.html } : null,
         attachments: (parsed.attachments || []).map((att, i) => ({
           id: String(i),
