@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.18] — 2026-08-03
+
+### 修复：实时通知重复（消除双通知）
+- **根因**：同一账号有两条通知路径并行——`ws-monitor.mjs`（ClawEmail WebSocket 实时推送）+ `routes/ui.js` 的 `pollAccounts`（每 60 秒轮询），二者用独立去重集合、互不感知，导致同一封邮件被弹两次。IMAP 账号同理（imap-idle + pollAccounts）。
+- **`routes/ui.js`**：`pollAccounts` 不再弹桌面通知（移除 `notifyMail` 调用与函数定义），保留列表缓存同步。所有桌面通知统一交给实时路径——`ws-monitor`（ClawEmail）/ `imap-idle`（IMAP）。每个账号仅一条通知路径，不再重复，且 ClawEmail 仍走比 60 秒轮询更实时的 WebSocket。
+
 ## [0.1.17] — 2026-08-03
 
 ### 修复：ClawEmail 账号 HTML-only 邮件无法总结/翻译

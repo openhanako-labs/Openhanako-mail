@@ -1222,8 +1222,6 @@ export default function (app, ctx) {
   const POLL_INTERVAL_MS = 60 * 1000; // 60 秒（v0.1.6：原 5 分钟，提升新邮件感知速度）
   const POLL_FETCH_LIMIT = 5;         // 对比最近 N 封，避免漏掉中间到达的多封
   const LAST_IDS_PATH = path.join(dataDir, "_poll_last_ids.json");
-  // 系统通知统一走 backend/node_modules（发布后用户安装依赖即可用，不再依赖本机 .workbuddy 路径）
-  const NOTIFY_NODE_PATH = path.join(BACKEND_DIR, "node_modules");
 
   function readLastIds() {
     try { return JSON.parse(fs.readFileSync(LAST_IDS_PATH, "utf-8")); } catch { return {}; }
@@ -1231,28 +1229,6 @@ export default function (app, ctx) {
   function writeLastIds(obj) {
     ensureDir();
     fs.writeFileSync(LAST_IDS_PATH, JSON.stringify(obj), "utf-8");
-  }
-
-  // 发送桌面通知（复用 helper/mail-toast.cjs）
-  function notifyMail(subject, sender, messageId, accountId) {
-    const toastScript = path.join(ctx.pluginDir, "helper", "mail-toast.cjs");
-    if (!fs.existsSync(toastScript)) return;
-    try {
-      const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-      const argsFile = path.join(os.tmpdir(), `hanako-mail-notify-${id}.json`);
-      fs.writeFileSync(argsFile, JSON.stringify({ subject, sender, messageId, accountId }), "utf-8");
-      execFile(process.execPath, [toastScript, "--args-file", argsFile], {
-        cwd: ctx.pluginDir,
-        timeout: 20000,
-        windowsHide: true,
-        env: { ...process.env, NODE_PATH: NOTIFY_NODE_PATH },
-      }, (err) => {
-        try { fs.unlinkSync(argsFile); } catch {}
-        if (err) console.warn("toast error:", err.message);
-      });
-    } catch (e) {
-      console.warn("toast failed:", e.message);
-    }
   }
 
   async function pollAccounts() {
@@ -1274,6 +1250,8 @@ export default function (app, ctx) {
 
         if (fresh.length) {
           // 新邮件 → 写缓存（前端列表刷新即可见，解决「刷新也没用」）
+          // 注意：桌面通知由 ws-monitor（ClawEmail）/ imap-idle（IMAP）实时路径负责，
+          // 这里不再弹通知，避免与实时路径重复（v0.1.18）。
           try {
             const cacheFile = path.join(cacheDir, `messages-${account.id}-INBOX.json`);
             const cached = readJson(cacheFile, []);
@@ -1282,12 +1260,6 @@ export default function (app, ctx) {
             const merged = Array.from(byId.values()).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
             writeJson(cacheFile, merged.slice(0, 50));
           } catch {}
-
-          // 逐封弹系统通知
-          for (const m of messages) {
-            if (known.includes(String(m.id))) continue;
-            notifyMail(m.subject || "(无主题)", m.from || "", m.id, account.id);
-          }
         }
 
         lastIds[key] = currentIds.slice(0, POLL_FETCH_LIMIT);
