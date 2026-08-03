@@ -443,7 +443,9 @@ export async function readMessage(email, messageId, options = {}) {
     await openBox(imap, options.folder || "INBOX");
     const uid = parseInt(messageId, 10);
     if (isNaN(uid)) throw new Error(`invalid messageId: ${messageId}`);
-    const rawMessages = await fetchMessages(imap, [uid], { bodies: "" });
+    // 关键：用 BODY[] 取整封 RFC822 原文，mailparser 才能解析 text/html；
+    // 之前 bodies:"" 只取 envelope，正文始终为空（v0.1.16）。
+    const rawMessages = await fetchMessages(imap, [uid], { bodies: "BODY[]" });
     if (rawMessages.length === 0) throw new Error("message not found");
     const parsed = await parseMessages(rawMessages);
     return parsed[0] || { error: "message not found" };
