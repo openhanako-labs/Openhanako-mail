@@ -52,6 +52,30 @@ export function defaultFolders(accountId) {
 }
 
 /**
+ * 将 HTML 转为可读纯文本（用于 HTML-only 邮件的 LLM 处理兜底）。
+ * @param {string|Buffer|null} html
+ * @returns {string}
+ */
+export function htmlToText(html) {
+  if (!html) return "";
+  // 先剥 <script>/<style>，再去所有标签，最后解码常见 HTML 实体
+  let s = String(html)
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&\w+;/g, " ");
+  // 合并空白
+  s = s.replace(/\s+/g, " ").trim();
+  return s;
+}
+
+/**
  * 构建 inbox.mjs 子进程所需的环境变量。
  * 将 account 中的 apiKey/email/IMAP 配置透传给后端。
  * @param {{apiKey?:string,email?:string,config?:object}} account

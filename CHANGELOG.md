@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.17] — 2026-08-03
+
+### 修复：ClawEmail 账号 HTML-only 邮件无法总结/翻译
+- **根因**：ClawEmail SDK `client.mail.read()` 返回的 HTML 邮件 `text` 为空、`html` 是 `{content:string}` 对象；`routes/ui.js` 的 `plainOf()` 只认 `text/body/snippet/textBody`，导致总结/翻译报"没有可处理的纯文本内容"。
+- **`backend/common.mjs`**：新增共享 `htmlToText()`（剥离 script/style/标签并解码实体）。
+- **`backend/clawemail-backend.mjs`**：`readMessage()` 在 SDK 返回后兜底：若 `text` 为空，从 `html.content` 或 `textContent` 提取纯文本写入 `mail.text`。
+- **`backend/imap-backend.mjs`**：移除内联 `htmlToText()`，改为从 `common.mjs` 导入共享实现。
+- **`routes/ui.js`**：`plainOf()` 增加 `html/textContent` 兜底提取，作为第二道防线。
+
 ## [0.1.9] — 2026-08-02
 
 ### 修复：LLM 凭据读取改为 provider-catalog.json（与官方生态插件一致）

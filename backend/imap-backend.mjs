@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import Imap from "imap";
 import nodemailer from "nodemailer";
 import { simpleParser } from "mailparser";
+import { htmlToText } from "./common.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TEMP_DIR = path.join(__dirname, "data", "_imap_tmp");
@@ -156,24 +157,6 @@ function fetchMessages(imap, uids, options = { bodies: "" }) {
     f.once("error", (err) => reject(err));
     f.once("end", () => resolve(messages));
   });
-}
-
-function htmlToText(html) {
-  if (!html) return "";
-  // 先剥 <script>/<style>，再去所有标签，最后解码常见 HTML 实体
-  let s = String(html)
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "")
-    .replace(/<\/?[a-z][^>]*>/gi, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/\s+/g, " ")
-    .trim();
-  return s;
 }
 
 async function parseMessages(rawMessages) {

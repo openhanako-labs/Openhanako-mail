@@ -8,6 +8,7 @@ import * as llm from "../backend/llm.mjs";
 // 镜像 hana-code-atlas（代码图谱）：通过 ctx.bus 向 Hanako 宿主解析真实模型配置
 import { resolveLlmConfig, listChatModels, getProviderCatalog } from "../backend/hana-llm.mjs";
 import * as blocklist from "../backend/blocklist.mjs";
+import { htmlToText } from "../backend/common.mjs";
 // 凭据加密统一走公共模块（routes/tools/ws-monitor 共用，消除加解密不对称）
 import {
   setCryptoDataDir,
@@ -655,6 +656,9 @@ export default function (app, ctx) {
     if (typeof m.body === "string" && m.body.trim()) return m.body;
     if (typeof m.snippet === "string" && m.snippet.trim()) return m.snippet;
     if (typeof m.textBody === "string" && m.textBody.trim()) return m.textBody;
+    // HTML-only 邮件兜底：从 html/textContent 提取可读文本
+    const htmlSrc = m.html || m.textContent || "";
+    if (htmlSrc) return htmlToText(htmlSrc);
     return "";
   }
 

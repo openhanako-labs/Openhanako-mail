@@ -10,6 +10,7 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { htmlToText } from "./common.mjs";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let MailClient = null;
@@ -180,7 +181,17 @@ export async function listFolders() {
 export async function readMessage(apiKey, user, messageId, options = {}) {
   const { markRead = false } = options;
   const client = await createClient(apiKey, user);
-  return await client.mail.read({ id: messageId, markRead });
+  const mail = await client.mail.read({ id: messageId, markRead });
+  // ClawEmail SDK 返回的 HTML 邮件通常 text 为空、html 是 {content:string} 对象；
+  // 这里从 html/textContent 兜底提取纯文本，保证总结/翻译等下游能拿到正文。
+  const htmlSrc =
+    (mail.html && (typeof mail.html === "string" ? mail.html : mail.html.content || "")) ||
+    mail.textContent ||
+    "";
+  if (!mail.text && htmlSrc) {
+    mail.text = htmlToText(htmlSrc);
+  }
+  return mail;
 }
 
 export async function downloadAttachment(apiKey, user, messageId, partId, outputPath) {
