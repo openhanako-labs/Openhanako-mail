@@ -1096,8 +1096,11 @@ export default function (app, ctx) {
 
     try {
       // 用后端 llm.mjs 的 chatCompletion 发一条测试消息
+      // 注意签名：chatCompletion(systemOrMessages, user, opts)——第二个参数是 user，
+      // opts 必须放第三位；此前把 opts 放第二位被当成 user，opts 恒空 → baseUrl 丢失 → 永远 notConfigured。
       const result = await llm.chatCompletion(
         [{ role: "user", content: "Reply with exactly: OK" }],
+        undefined,
         { baseUrl, apiKey, model, api, max_tokens: 8 }
       );
       return c.json({ ok: true, data: result?.model || model });
