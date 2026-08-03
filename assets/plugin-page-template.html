@@ -1336,10 +1336,10 @@ function markRead(messageId, read) { return markReadStatus(messageId, read); }
 // 调用后端 LLM 做总结 / 翻译，结果渲染到详情页 ai-panel
 function aiAction(action, messageId) {
   if (!state.accountId || !messageId) { toast('请先选择账号'); return; }
-  // 检查 LLM 配置
+  // 检查 LLM 配置（v0.1.7+ 只存 provider/model，baseUrl/apiKey 由后端从 catalog 回源）
   var cfg = getLlmConfig();
-  if (!cfg || !cfg.baseUrl || !cfg.model) {
-    toast('请先在「同步」页面配置 LLM（AI 总结/翻译需要）');
+  if (!cfg || !cfg.provider || !cfg.model) {
+    toast('请先在「AI 总结 / 翻译 供应商」面板选择 LLM（AI 总结/翻译需要）');
     navigateTo('settings');
     return;
   }
