@@ -1,241 +1,102 @@
+/**
+ * hanako-mail — v2 App 入口。
+ *
+ * 架构（v0.3.0 起）：
+ *
+ *   ┌─ AppHost（宿主进程，Node 权限模型内）────────────────────────┐
+ *   │  · ctx.tools.register()  五个邮件工具                        │
+ *   │  · ctx.routes.register() 卡片要调的后端路由（http/ui.js）     │
+ *   │  · 把要干活的请求转发给下面的服务                             │
+ *   │  ✗ 没有出站网络   ✗ 读不到安装目录 / app-data 之外的文件       │
+ *   └────────────────────┬───────────────────────────────────────┘
+ *                        │ ctx.runtime.fetch(runtimeId, ...)
+ *   ┌────────────────────▼───────────────────────────────────────┐
+ *   │  受管 native 服务（runtime/service.mjs，独立进程）            │
+ *   │  · ClawEmail WebSocket 监听 + IMAP IDLE 监听                 │
+ *   │  · inbox 命令表（list/read/send/reply/转发/附件…）            │
+ *   │  · 出站 HTTP（LLM 端点）、图片代理、桌面通知                    │
+ *   │  · npm install、v1 数据迁移                                   │
+ *   └────────────────────────────────────────────────────────────┘
+ *
+ * 为什么必须拆成两个进程：AppHost 及**其一切子进程**都在 Node 权限模型里，没有网络、
+ * 也读不到白名单外的文件（Node 是在进程内部把权限模型传给子进程的，剥环境变量没用
+ * —— 都实测过）。而邮件后端离开网络就不存在。平台为此准备了受管运行时，
+ * 只有 native profile 允许「读当前用户可读的文件 + 外网」。见 runtime/service.mjs。
+ */
+
 import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { execFile, spawn } from "node:child_process";
-// 常驻后端 worker 的宿主侧客户端（与 routes/tools 共享同一模块单例）
-import { shutdownWorker } from "./backend/worker-client.mjs";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const BACKEND_DIR = path.join(__dirname, "backend");
-const DATA_DIR = path.join(BACKEND_DIR, "data");
-const WS_MONITOR_PATH = path.join(BACKEND_DIR, "ws-monitor.mjs");
+import { APP_ID, runtimeDataDir, legacyDataDir } from "./lib/env.mjs";
+import { legacyCtx } from "./lib/legacy-ctx.mjs";
+import { registerTools } from "./lib/register-tools.mjs";
+import { registerRoutes } from "./lib/register-routes.mjs";
+import { startService, stopService, serviceRuntimeId, serviceProxyPrefix } from "./lib/runtime-host.mjs";
+import { startNotificationDrain, stopNotificationDrain } from "./lib/notify-drain.mjs";
 
-function checkDeps() {
-  const missing = [];
+export const name = APP_ID;
 
-  // 直接从 backend/package.json 读取依赖清单，保证与声明完全一致
-  // （避免手写枚举漏掉部分依赖，导致 node_modules 部分残留时漏装）
-  let manifest;
+export async function apply(ctx) {
+  // ── 1. 先把数据目录钉死 ──
+  // 必须早于任何依赖它的读取：lib/env.mjs、backend/*.mjs、受管服务都按
+  // HANAKO_PLUGIN_DATA 解析目录，这里写一次，整条链路就对齐了。
+  if (ctx.dataDir) process.env.HANAKO_PLUGIN_DATA = ctx.dataDir;
+  const lctx = legacyCtx(ctx);
+  const log = lctx.log;
+  const dataDir = runtimeDataDir();
+  const legacyDir = legacyDataDir();
+
+  log.info(`${APP_ID} v2 loaded`, { appId: APP_ID, dataDir, legacyDir });
+
+  try { fs.mkdirSync(dataDir, { recursive: true }); } catch { /* ignore */ }
+
+  // ── 2. 工具与路由先上线 ──
+  // 它们不依赖服务；服务慢一点起来也不该让应用整体 failed。
+  const disposers = [];
+
   try {
-    const pkgPath = path.join(BACKEND_DIR, "package.json");
-    manifest = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
-  } catch {
-    // 读不到清单就不自动安装，避免误判
-    return [];
-  }
-
-  const deps = Object.keys(manifest.dependencies || {});
-  for (const dep of deps) {
-    // 作用域包 @scope/name -> node_modules/@scope/name/package.json
-    const rel = dep.startsWith("@")
-      ? path.join("node_modules", dep.split("/")[0], dep.split("/")[1])
-      : path.join("node_modules", dep);
-    const pkgJson = path.join(BACKEND_DIR, rel, "package.json");
-    if (!fs.existsSync(pkgJson)) missing.push(dep);
-  }
-
-  return missing;
-}
-
-function ensureDataDir() {
-  try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
-}
-
-let autoInstallCooldown = false;
-function autoInstallDeps() {
-  if (autoInstallCooldown) return;
-
-  const lockFile = path.join(DATA_DIR, ".hanako-auto-install.lock");
-  if (fs.existsSync(lockFile)) return; // 已在安装中或已安装过
-
-  const missing = checkDeps();
-  if (missing.length === 0) return;
-
-  autoInstallCooldown = true;
-  fs.writeFileSync(lockFile, Date.now().toString());
-
-  // 用 spawn 后台跑 npm install（Windows 需要 shell: true 才能找到 npm.cmd）
-  const proc = spawn("npm", ["install"], {
-    cwd: BACKEND_DIR,
-    windowsHide: true,
-    shell: true,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-
-  let stdout = "";
-  let stderr = "";
-  proc.stdout?.on("data", (d) => { stdout += d.toString(); });
-  proc.stderr?.on("data", (d) => { stderr += d.toString(); });
-
-  proc.on("close", (code) => {
-    autoInstallCooldown = false;
-    try { fs.unlinkSync(lockFile); } catch {}
-    if (code === 0) {
-      console.log("[hanako-mail] 后端依赖自动安装成功");
-    } else {
-      console.warn("[hanako-mail] 后端依赖自动安装失败", { code, stderr: stderr.slice(-500) });
-    }
-  });
-
-  proc.on("error", (e) => {
-    autoInstallCooldown = false;
-    try { fs.unlinkSync(lockFile); } catch {}
-    console.warn("[hanako-mail] 无法自动安装依赖", { error: e.message });
-  });
-}
-
-let wsMonitorProc = null;
-let wsMonitorShutdown = false;
-const WS_PID_FILE = path.join(DATA_DIR, ".ws-monitor.pid");
-
-// IMAP 实时收件监听（IDLE）—— 与 ws-monitor 并列的第二个常驻监听进程
-const IMAP_IDLE_PATH = path.join(BACKEND_DIR, "imap-idle.mjs");
-let imapIdleProc = null;
-let imapIdleShutdown = false;
-const IMAP_IDLE_PID_FILE = path.join(DATA_DIR, ".imap-idle.pid");
-
-function writeWsPid(pid) {
-  try { fs.writeFileSync(WS_PID_FILE, String(pid)); } catch {}
-}
-function clearWsPid() {
-  try { fs.unlinkSync(WS_PID_FILE); } catch {}
-}
-
-function killWsTree(proc) {
-  if (!proc || proc.pid == null) return;
-  const pid = proc.pid;
-  try {
-    // 优先 SIGTERM（Linux/Mac 走 ws-monitor 优雅退出 handler）
-    proc.kill("SIGTERM");
-  } catch {}
-  // Windows 兜底：强制杀整棵进程树（TerminateProcess 不触发 handler，但能立刻腾出文件锁）
-  if (process.platform === "win32") {
-    try {
-      const { spawnSync } = require("node:child_process");
-      spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
-    } catch {}
-  }
-}
-
-function startWsMonitor(pluginDataDir) {
-  if (wsMonitorShutdown) return; // 已卸载，不再拉起
-  if (wsMonitorProc) return; // 已在运行
-  try {
-    const env = { ...process.env };
-    // 传入与 routes/tools 一致的 plugin-data 目录，否则 ws-monitor 读不到 accounts.json、
-    // 实时监听账号为空 → 实时收件/通知整体失效（审计发现的结构性错位，F3）
-    if (pluginDataDir) env.HANAKO_PLUGIN_DATA = pluginDataDir;
-    const proc = spawn(process.execPath, [WS_MONITOR_PATH], {
-      cwd: BACKEND_DIR,
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"],
-      shell: true,
-      env,
-    });
-    wsMonitorProc = proc;
-    writeWsPid(proc.pid);
-    proc.stdout?.on("data", (d) => console.log("[ws-monitor]", d.toString().trim()));
-    proc.stderr?.on("data", (d) => console.warn("[ws-monitor]", d.toString().trim()));
-    proc.on("close", (code) => {
-      wsMonitorProc = null;
-      clearWsPid();
-      if (wsMonitorShutdown) {
-        console.log("[ws-monitor] 已随插件卸载退出，不再重启");
-        return;
-      }
-      console.warn(`[ws-monitor] 退出: ${code}，10秒后重启...`);
-      setTimeout(startWsMonitor, 10000);
-    });
-    proc.on("error", (e) => {
-      wsMonitorProc = null;
-      clearWsPid();
-      if (wsMonitorShutdown) return;
-      console.warn("[ws-monitor] 启动失败", { error: e.message });
-      setTimeout(startWsMonitor, 30000);
-    });
+    disposers.push(registerTools(ctx, lctx));
   } catch (e) {
-    console.warn("[ws-monitor] 无法启动", { error: e.message });
+    log.error("工具注册整体失败", { error: e.message });
   }
-}
 
-// ── IMAP IDLE 实时收件监听（v0.1.6） ──
-function startImapIdle(pluginDataDir) {
-  if (imapIdleShutdown) return; // 已卸载，不再拉起
-  if (imapIdleProc) return; // 已在运行
   try {
-    const env = { ...process.env };
-    if (pluginDataDir) env.HANAKO_PLUGIN_DATA = pluginDataDir;
-    const proc = spawn(process.execPath, [IMAP_IDLE_PATH], {
-      cwd: BACKEND_DIR,
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"],
-      shell: true,
-      env,
-    });
-    imapIdleProc = proc;
-    try { fs.writeFileSync(IMAP_IDLE_PID_FILE, String(proc.pid)); } catch {}
-    proc.stdout?.on("data", (d) => console.log("[imap-idle]", d.toString().trim()));
-    proc.stderr?.on("data", (d) => console.warn("[imap-idle]", d.toString().trim()));
-    proc.on("close", (code) => {
-      imapIdleProc = null;
-      try { fs.unlinkSync(IMAP_IDLE_PID_FILE); } catch {}
-      if (imapIdleShutdown) {
-        console.log("[imap-idle] 已随插件卸载退出，不再重启");
-        return;
-      }
-      console.warn(`[imap-idle] 退出: ${code}，10秒后重启...`);
-      setTimeout(startImapIdle, 10000);
-    });
-    proc.on("error", (e) => {
-      imapIdleProc = null;
-      try { fs.unlinkSync(IMAP_IDLE_PID_FILE); } catch {}
-      if (imapIdleShutdown) return;
-      console.warn("[imap-idle] 启动失败", { error: e.message });
-      setTimeout(startImapIdle, 30000);
-    });
+    const offRoutes = await registerRoutes(ctx, lctx);
+    if (typeof offRoutes === "function") disposers.push(offRoutes);
   } catch (e) {
-    console.warn("[imap-idle] 无法启动", { error: e.message });
+    log.error("路由注册失败", { error: e.message });
   }
+
+  // ── 3. 起受管服务 ──
+  // 服务会自己完成 v1 数据迁移与依赖安装（它读得到 plugin-data、也出得了网；
+  // AppHost 两样都不行）。
+  //
+  // 注意这里不把失败当终态：装载与权限记账之间有窗口（实测 apply 跑在
+  // 23:58:44.097，而 app/runtime.execute 写进账本是 23:58:44.287），
+  // 首次装载很可能被拒。lib/runtime-host.mjs 会在第一次真调用时自愈重试。
+  const ready = await startService(ctx, { dataDir, legacyDir, log });
+
+  if (ready) {
+    // 通知由 AppHost 发：服务不能 spawn，而 Windows 通知必须拉起进程。
+    // 服务负责写队列（它收得到邮件），这里只负责定时取走并派发。
+    try { startNotificationDrain(log); }
+    catch (e) { log.warn("启动通知派发失败", { error: e.message }); }
+    log.info(`${APP_ID} v2 ready`, { runtimeId: serviceRuntimeId(), proxyPrefix: serviceProxyPrefix() });
+  } else {
+    log.warn(`${APP_ID} 已加载，邮件后端暂不可用 —— 将在首次收发时自动重试`, {
+      hint: "若一直不可用：本应用需要 app/runtime.execute + app/runtime.native "
+        + "+ app/runtime.network 三项授权（设置 → 安全 → 应用能力），"
+        + "另外必须能监听 127.0.0.1:43179。工具与卡片仍可用。",
+    });
+  }
+
+  return () => {
+    try { stopNotificationDrain(); } catch { /* ignore */ }
+    for (const off of disposers) {
+      try { off(); } catch { /* fiber teardown */ }
+    }
+    // 受管服务的进程生命周期归宿主管，但显式停一次更干净（reload 时不留孤儿）。
+    stopService().catch(() => {});
+  };
 }
 
-export default class HanakoMailPlugin {
-  async onload() {
-    const ctx = this.ctx;
-    ctx.log?.info?.("hanako-mail loaded", { pluginId: ctx.pluginId });
-
-    ensureDataDir();
-    const missing = checkDeps();
-    if (missing.length > 0) {
-      ctx.log?.warn?.("hanako-mail: 后端依赖缺失，尝试自动安装", { missing });
-      autoInstallDeps();
-    }
-
-    // 启动 WebSocket 实时收件监听（传入 plugin-data 目录，确保与 routes/tools 共用同一账号缓存）
-    wsMonitorShutdown = false;
-    const pluginDataDir = (ctx.dataDir && ctx.pluginId) ? path.join(ctx.dataDir, ctx.pluginId) : "";
-    startWsMonitor(pluginDataDir);
-
-    // 启动 IMAP IDLE 实时收件监听（个人邮箱账号；ClawEmail 走上面的 WebSocket）
-    imapIdleShutdown = false;
-    startImapIdle(pluginDataDir);
-  }
-
-  async onunload() {
-    const ctx = this.ctx;
-    ctx.log?.info?.("hanako-mail unloaded");
-    wsMonitorShutdown = true;
-    if (wsMonitorProc) {
-      killWsTree(wsMonitorProc);
-      wsMonitorProc = null;
-    }
-    clearWsPid();
-    imapIdleShutdown = true;
-    if (imapIdleProc) {
-      killWsTree(imapIdleProc);
-      imapIdleProc = null;
-    }
-    try { fs.unlinkSync(IMAP_IDLE_PID_FILE); } catch {}
-    // 关停常驻后端 worker（优雅退出：stdin.end + SIGTERM 兜底）
-    try { shutdownWorker(); } catch (e) { ctx.log?.warn?.("worker shutdown failed", { error: e.message }); }
-  }
-}
+export default { name, apply };

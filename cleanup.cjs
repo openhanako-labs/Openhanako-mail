@@ -1,57 +1,54 @@
 #!/usr/bin/env node
 /**
- * 清理脚本：释放被后台进程占用的插件目录锁，使插件可被正常删除。
+ * cleanup.cjs — 排查残留的邮件后端进程。
  *
- * 使用场景：
- *   - 插件卸载时 onunload 未触发（IDE 异常退出等），ws-monitor 进程残留
- *   - 直接删除插件文件夹时提示"文件被占用 / 权限不足"
+ * v0.3.0 起架构变了：AppHost 不再自己 spawn 常驻子进程，改由宿主托管一个
+ * native 服务（runtime/service.mjs）。那个进程的生命周期归宿主，
+ * **正常情况完全用不到这个脚本**。
+ *
+ * 保留它是为了两种极端情况：
+ *   - 宿主异常退出，托管进程成了孤儿，占着 app-data 里的日志/缓存文件
+ *   - 手工删除安装目录时提示"文件被占用"
  *
  * 用法：
- *   node cleanup.cjs            释放后台进程占用（推荐先跑这个）
- *   node cleanup.cjs --delete  释放占用后顺便删除 backend/ 目录残留
+ *   node cleanup.cjs          列出并终止残留的服务进程
+ *   node cleanup.cjs --list   只看，不动手
  *
- * 注意：本脚本不删除插件根目录本身，删除动作请在 IDE/文件管理器中进行。
+ * 注意：本脚本不删除任何目录。
  */
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
-const BACKEND_DIR = path.join(__dirname, "backend");
-const DATA_DIR = path.join(BACKEND_DIR, "data");
-const PID_FILES = [
-  path.join(DATA_DIR, ".ws-monitor.pid"),
-  path.join(DATA_DIR, ".worker.pid"),
-  path.join(DATA_DIR, ".imap-idle.pid"),
-];
-// 需要清理的后台进程标记（命令行含这些片段即命中）
-const PROC_MARKERS = ["ws-monitor.mjs", "worker.mjs", "imap-idle.mjs"];
+// 残留进程的命令行特征：托管服务的入口脚本
+const PROC_MARKERS = ["runtime/service.mjs", "runtime\\service.mjs"];
 
 function log(msg) {
   console.log("[cleanup] " + msg);
 }
 
-// 跨平台查找命令行含标记（ws-monitor / worker）的 node 进程 pid
-function findProcPids() {
+function findPids() {
   const pids = new Set();
   try {
     if (process.platform === "win32") {
-      const out = spawnSync("wmic", ["process", "where", "name='node.exe'", "get", "processid,commandline", "/format:csv"], { encoding: "utf8", windowsHide: true });
-      const lines = (out.stdout || "").split(/\r?\n/);
-      for (const line of lines) {
-        if (PROC_MARKERS.some((m) => line.includes(m))) {
-          const cols = line.split(",");
-          const pid = cols[cols.length - 1]?.trim();
-          if (pid && /^\d+$/.test(pid)) pids.add(pid);
-        }
+      // wmic 在新系统上可能已移除，优先用 PowerShell 的 CIM
+      const out = spawnSync(
+        "powershell",
+        ["-NoProfile", "-Command",
+          "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine } | ForEach-Object { \"$($_.ProcessId)`t$($_.CommandLine)\" }"],
+        { encoding: "utf8", windowsHide: true, maxBuffer: 16 * 1024 * 1024 },
+      );
+      for (const line of (out.stdout || "").split(/\r?\n/)) {
+        if (!PROC_MARKERS.some((m) => line.includes(m))) continue;
+        const pid = line.split("\t")[0]?.trim();
+        if (pid && /^\d+$/.test(pid)) pids.add(pid);
       }
     } else {
       const out = spawnSync("ps", ["-eo", "pid,args"], { encoding: "utf8" });
-      const lines = (out.stdout || "").split(/\r?\n/);
-      for (const line of lines) {
-        if (PROC_MARKERS.some((m) => line.includes(m))) {
-          const pid = line.trim().split(/\s+/)[0];
-          if (pid && /^\d+$/.test(pid)) pids.add(pid);
-        }
+      for (const line of (out.stdout || "").split(/\r?\n/)) {
+        if (!PROC_MARKERS.some((m) => line.includes(m))) continue;
+        const pid = line.trim().split(/\s+/)[0];
+        if (pid && /^\d+$/.test(pid)) pids.add(pid);
       }
     }
   } catch (e) {
@@ -73,39 +70,19 @@ function killPid(pid) {
   }
 }
 
-// 1) 按 pid 文件杀（ws-monitor + worker）
-let killedByPidFile = false;
-for (const PID_FILE of PID_FILES) {
-  if (fs.existsSync(PID_FILE)) {
-    const pid = fs.readFileSync(PID_FILE, "utf8").trim();
-    if (pid && /^\d+$/.test(pid)) {
-      log("发现 pid 文件，终止占用进程 " + pid);
-      killPid(pid);
-      killedByPidFile = true;
-    }
-    try { fs.unlinkSync(PID_FILE); } catch {}
-  }
+const pids = findPids();
+const listOnly = process.argv.includes("--list");
+
+if (pids.length === 0) {
+  log("未发现残留的邮件后端服务进程，无需清理");
+  process.exit(0);
 }
 
-// 2) 兜底：扫描所有 node 进程，杀掉命令行含 ws-monitor.mjs / worker.mjs 的
-const pids = findProcPids();
-if (pids.length === 0 && !killedByPidFile) {
-  log("未发现残留的后台进程（ws-monitor / worker），无需清理");
-} else {
-  for (const pid of pids) killPid(pid);
-  log("后台进程已清理，现在可以正常删除插件了");
+log(`发现 ${pids.length} 个残留进程：${pids.join(", ")}`);
+if (listOnly) {
+  log("（--list：只看不动手）");
+  process.exit(0);
 }
 
-// 3) 可选：删除 backend/ 目录残留
-if (process.argv.includes("--delete")) {
-  if (fs.existsSync(BACKEND_DIR)) {
-    try {
-      fs.rmSync(BACKEND_DIR, { recursive: true, force: true });
-      log("已删除 backend/ 目录");
-    } catch (e) {
-      log("删除 backend/ 失败：" + e.message + "（可能仍有其它进程占用，请关闭后重试）");
-    }
-  }
-}
-
-log("完成");
+for (const pid of pids) killPid(pid);
+log("清理完成。若进程反复出现，说明宿主仍在托管它 —— 请在「已安装」页停用/重新加载该应用，而不是反复杀进程。");

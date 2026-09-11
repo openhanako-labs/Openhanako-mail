@@ -27,11 +27,8 @@ backend/data/
 *.debug.json
 debug-*
 
-# ── 编译产物（.NET 通知助手） ──
-helper/bin/*.exe
-helper/bin/*.dll
-helper/**/bin/
-helper/**/obj/
+# ── 编译产物（仓库已无 .NET 通知助手，规则留作防护） ──
+helper/bin/
 
 # ── IDE / 系统文件 ──
 .vscode/

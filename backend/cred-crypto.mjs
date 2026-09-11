@@ -35,11 +35,12 @@ export function setCryptoDataDir(dir) {
   if (dir && typeof dir === "string") _dataDir = dir;
 }
 
-/** 解析凭据数据目录：显式设置 > HANAKO_PLUGIN_DATA（ws-monitor/index.js）> 默认。 */
+/** 解析凭据数据目录：显式设置 > HANAKO_PLUGIN_DATA（主进程/子进程）> 默认 App 数据目录。 */
 export function getCryptoDataDir() {
   if (_dataDir) return _dataDir;
   if (process.env.HANAKO_PLUGIN_DATA) return process.env.HANAKO_PLUGIN_DATA;
-  return path.join(os.homedir(), ".hanako", "plugin-data", "hanako-mail");
+  const home = process.env.HANA_HOME || path.join(os.homedir(), ".hanako");
+  return path.join(home, "app-data", "hanako-mail");
 }
 
 function saltFilePath() {
@@ -111,13 +112,17 @@ export function decryptField(token) {
   return token; // 两个密钥均失败：原样返回
 }
 
+/** 需要加密的 account.config 字段。新增凭据请加到这里。 */
+const SENSITIVE_CONFIG_KEYS = ["imapPass", "smtpPass", "agentqqAccessToken", "agentqqRefreshToken"];
+
 export function encryptSensitiveFields(account) {
   const out = { ...account };
   if (out.apiKey && typeof out.apiKey === "string") out.apiKey = encryptField(out.apiKey);
   if (out.config && typeof out.config === "object") {
     const cfg = { ...out.config };
-    if (cfg.imapPass && typeof cfg.imapPass === "string") cfg.imapPass = encryptField(cfg.imapPass);
-    if (cfg.smtpPass && typeof cfg.smtpPass === "string") cfg.smtpPass = encryptField(cfg.smtpPass);
+    for (const k of SENSITIVE_CONFIG_KEYS) {
+      if (cfg[k] && typeof cfg[k] === "string") cfg[k] = encryptField(cfg[k]);
+    }
     out.config = cfg;
   }
   return out;
@@ -129,8 +134,9 @@ export function decryptSensitiveFields(account) {
   if (out.apiKey && typeof out.apiKey === "string") out.apiKey = decryptField(out.apiKey);
   if (out.config && typeof out.config === "object") {
     const cfg = { ...out.config };
-    if (cfg.imapPass && typeof cfg.imapPass === "string") cfg.imapPass = decryptField(cfg.imapPass);
-    if (cfg.smtpPass && typeof cfg.smtpPass === "string") cfg.smtpPass = decryptField(cfg.smtpPass);
+    for (const k of SENSITIVE_CONFIG_KEYS) {
+      if (cfg[k] && typeof cfg[k] === "string") cfg[k] = decryptField(cfg[k]);
+    }
     out.config = cfg;
   }
   return out;

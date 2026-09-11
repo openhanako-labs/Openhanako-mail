@@ -12,10 +12,12 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
-import { execFile } from "node:child_process";
 // accounts.json 中的 apiKey 是加密存储的（routes/ui.js 加密落盘），读取后必须解密，
 // 否则 MailClient 会拿到 "ENC:..." 密文导致 WebSocket 实时收件失效。
 import { setCryptoDataDir, decryptSensitiveFields } from "./cred-crypto.mjs";
+
+// 供 runtime/service.mjs 覆盖数据目录（服务启动时先设好再 import 本模块）
+export function setDataDir(dir) { if (dir) process.env.HANAKO_PLUGIN_DATA = dir; }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -72,28 +74,22 @@ function saveProcessed(accountId, set) {
   fs.writeFileSync(f, JSON.stringify([...set]), "utf-8");
 }
 
+// ── 桌面通知：写队列，由 AppHost 取走并派发 ──
+//
+// 本模块现在跑在受管 native 服务里，**不能 spawn**（Job Object → EPERM），
+// 而 Windows 通知必须拉起一个进程。所以写队列，让有 --allow-child-process 的
+// AppHost 定时来取（见 http/ui.js 的 drainNotifications）。
 function notifyDesktop(subject, sender, messageId, accountId) {
   try {
-    const toastScript = path.join(__dirname, "..", "helper", "mail-toast.cjs");
-    if (!fs.existsSync(toastScript)) {
-      log("WARN", "mail-toast.cjs 不存在，跳过桌面通知", { toastScript });
-      return;
-    }
-    // 直接调用原生桌面通知（与 routes/ui.js 的 postNotify 同一条链路），
-    // 不再写 _pending_notify 黑洞目录（原先无人消费，实时通知等于失效）。
-    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    const argsFile = path.join(getDataDir(), `notify-args-${id}.json`);
-    fs.writeFileSync(argsFile, JSON.stringify({ subject, sender, messageId, accountId }), "utf-8");
-    execFile(process.execPath, [toastScript, "--args-file", argsFile], {
-      cwd: path.join(__dirname, ".."),
-      windowsHide: true,
-      env: { ...process.env, NODE_PATH: path.join(__dirname, "node_modules") },
-    }, (err) => {
-      try { fs.unlinkSync(argsFile); } catch {}
-      if (err) log("WARN", "桌面通知失败", { err: err.message });
-    });
+    const dir = path.join(getDataDir(), "_pending_notify");
+    fs.mkdirSync(dir, { recursive: true });
+    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    fs.writeFileSync(path.join(dir, `${id}.json`), JSON.stringify({
+      subject: subject || "(无主题)", sender: sender || "", messageId: messageId || "",
+      accountId: accountId || "", queuedAt: new Date().toISOString(),
+    }), "utf-8");
   } catch (e) {
-    log("WARN", "桌面通知失败", { err: e.message });
+    log("WARN", "桌面通知入队失败", { err: e.message });
   }
 }
 
@@ -190,21 +186,30 @@ export async function startAll() {
   }
 }
 
-// 直接运行模式（被 index.js spawn 时执行）
-let shuttingDown = false;
-function shutdown(code = 0) {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  log("INFO", "收到退出信号，正在关闭 WebSocket 监听...");
-  process.exit(code);
-}
-process.on("SIGTERM", () => shutdown(0));
-process.on("SIGINT", () => shutdown(0));
-process.on("SIGBREAK", () => shutdown(0)); // Windows Ctrl+Break
+// 直接运行模式（被 spawn 时执行）。
+// 被 runtime/service.mjs import 时不自启 —— 那里由服务自己调 startAll() 并拥有生命周期。
+// 否则本文件的 SIGTERM 处理器会把整个服务进程一起带走。
+const IS_MAIN = (() => {
+  try { return process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url); }
+  catch { return false; }
+})();
 
-try {
-  log("INFO", "文件已加载");
-  await startAll();
-} catch (e) {
-  log("ERROR", "启动失败", e);
+if (IS_MAIN) {
+  let shuttingDown = false;
+  const shutdown = (code = 0) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    log("INFO", "收到退出信号，正在关闭 WebSocket 监听...");
+    process.exit(code);
+  };
+  process.on("SIGTERM", () => shutdown(0));
+  process.on("SIGINT", () => shutdown(0));
+  process.on("SIGBREAK", () => shutdown(0)); // Windows Ctrl+Break
+
+  try {
+    log("INFO", "文件已加载");
+    await startAll();
+  } catch (e) {
+    log("ERROR", "启动失败", e);
+  }
 }

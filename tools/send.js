@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { inboxEnvFor } from "../backend/common.mjs";
+// v2：安装目录只读，临时参数文件改写到 App 数据目录
+import { runtimeDataDir } from "../lib/env.mjs";
 // 常驻 worker IPC（v0.1.3 起替代每次冷启 node 子进程跑 inbox.mjs）
 import * as workerClient from "../backend/worker-client.mjs";
 
@@ -15,7 +17,7 @@ async function runInbox(args, extraEnv = {}) {
 // 结构化参数走 --json=<file> 通道（与 routes/ui.js 一致），避免长正文/特殊字符
 // 在命令行参数中受限或被解析错位
 function writeOptsFile(obj) {
-  const dir = path.join(BACKEND_DIR, "data", "_tmp");
+  const dir = path.join(runtimeDataDir(), "_tmp");
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `opts_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.json`);
   fs.writeFileSync(file, JSON.stringify(obj), "utf-8");

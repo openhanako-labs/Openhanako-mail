@@ -80,6 +80,13 @@ function resolveAccountConfig(email) {
     }
     return { backend, email };
   }
+  // AgentQQ 用 OAuth（access/refresh token），不依赖 apiKey
+  if (backend === "agentqq") {
+    if (!process.env.AGENTQQ_ACCESS_TOKEN && !process.env.AGENTQQ_REFRESH_TOKEN) {
+      throw new Error("AgentQQ 未授权 — 请在邮件卡片里添加 AgentQQ 账号并完成授权（设备码流程）。");
+    }
+    return { backend, email };
+  }
   const apiKey = process.env.CLAWEMAIL_API_KEY;
   if (!apiKey) {
     throw new Error("CLAWEMAIL_API_KEY not set — 请在 account 中填写 apiKey（accounts.json），或在 backend/.env 中配置兜底。");
@@ -437,9 +444,9 @@ export async function listFolders(accountEmail) {
 }
 
 // ── CLI 入口 ────────────────────────────────────────────
-// COMMANDS / parseOptions 同时供常驻 worker（worker.mjs）复用：
-// 宿主侧不再每次冷启 node 子进程，而是经 stdin/stdout JSON-RPC 把
-// CLI 风格参数发给常驻 worker，worker 用同一张命令表执行。
+// COMMANDS / parseOptions 是后端的唯一命令入口：受管服务（runtime/service.mjs）
+// 载入本模块后直接用这张表执行，不再像 v1 那样 spawn 一个常驻 worker 进程、
+// 经 stdin/stdout 传参。
 
 export const COMMANDS = {
   list: async ([email, ...rest]) => {

@@ -2,7 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
-import { execFile } from "node:child_process";
 
 import * as llm from "../backend/llm.mjs";
 // 镜像 hana-code-atlas（代码图谱）：通过 ctx.bus 向 Hanako 宿主解析真实模型配置
@@ -17,6 +16,10 @@ import {
 } from "../backend/cred-crypto.mjs";
 // 常驻 worker IPC：替代「每次 API 调用冷启 node 子进程跑 inbox.mjs」
 import * as workerClient from "../backend/worker-client.mjs";
+// v2：安装目录只读，一切运行时写入落到 App 数据目录（与子进程共用同一路径）
+import { runtimeDataDir } from "../lib/env.mjs";
+// 需要网络/外部文件/子进程的活全部转发给受管 native 服务（见 lib/runtime-host.mjs）
+import { callService } from "../lib/runtime-host.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -54,10 +57,9 @@ function _defaultFoldersFallback(accountId) {
   ];
 }
 
-// 子进程脚本：在 Hana 服务器被拦截的 global fetch 之外，以独立进程拉取外网图片。
-const PROXY_FETCH_SCRIPT = path.join(__dirname, "..", "assets", "_proxy-fetch.cjs");
 const PLUGIN_ROOT = path.resolve(__dirname, "..");
 const BACKEND_DIR = path.join(PLUGIN_ROOT, "backend");
+// 注：v0.3.0 起图片代理不再由本进程 spawn 子进程，改由受管服务拉取（见 getImageProxy）。
 
 // 执行后端命令：常驻 worker IPC（v0.1.3 起替代每次冷启 node 子进程）。
 // 参数语义与旧 execFile 版 runInbox 完全一致（CLI 风格 args + 账号凭据 env），
@@ -72,7 +74,13 @@ function resolveAccount(accountsList, accountId) {
 
 // 检查后端依赖是否完整
 // 返回 null(OK) / { error, hint }(缺失且未在安装) / { installing: true }(正在后台安装)
-const INSTALL_LOCK = path.join(BACKEND_DIR, "data", ".hanako-auto-install.lock");
+//
+// 懒求值：模块加载时 apply() 还没跑，HANAKO_PLUGIN_DATA 未写入，此时算出的路径可能不对
+// （后果只有一个锁文件位置，但没必要留这个坑）。
+function installLockPath() {
+  return path.join(runtimeDataDir(), ".hanako-auto-install.lock");
+}
+
 function checkBackendDeps(account) {
   if (!account) return null;
   const email = (account.email || "").toLowerCase();
@@ -81,7 +89,7 @@ function checkBackendDeps(account) {
   if (email.endsWith("@claw.163.com")) {
     const sdkPath = path.join(BACKEND_DIR, "node_modules", "@clawemail", "node-sdk", "package.json");
     if (!fs.existsSync(sdkPath)) {
-      if (fs.existsSync(INSTALL_LOCK)) return { installing: true };
+      if (fs.existsSync(installLockPath())) return { installing: true };
       return { error: "ClawEmail SDK 未安装。请先在 backend/ 目录执行 npm install，或改用其他后端。", hint: "cd backend && npm install" };
     }
   }
@@ -91,7 +99,7 @@ function checkBackendDeps(account) {
     const imapPath = path.join(BACKEND_DIR, "node_modules", "imap", "package.json");
     const nmPath = path.join(BACKEND_DIR, "node_modules", "nodemailer", "package.json");
     if (!fs.existsSync(imapPath) || !fs.existsSync(nmPath)) {
-      if (fs.existsSync(INSTALL_LOCK)) return { installing: true };
+      if (fs.existsSync(installLockPath())) return { installing: true };
       return { error: "IMAP 依赖未安装。请先在 backend/ 目录执行 npm install，否则个人邮箱无法使用。", hint: "cd backend && npm install" };
     }
   }
@@ -185,22 +193,11 @@ async function batchFetchSnippets(account, messages, topN = 12) {
   need.forEach((m, i) => { m.snippet = out[i]; });
   return messages;
 }
-
 // 邮件里的外网图片代理（解决沙箱 iframe 无法访问外网的问题）。
 // 安全约束：仅允许 http/https；屏蔽私有/回环地址防 SSRF；校验 Content-Type 为 image/*。
-// 实际拉取交给独立子进程（assets/_proxy-fetch.cjs），因为 Hana 服务器会拦截插件内
-// 的 global fetch；子进程继承 Hana 的代理环境变量会被网关拦截（missing_credential），
-// 因此这里剥离代理相关环境变量，让子进程直连外网。
-const PROXY_ENV_BLACKLIST = [
-  "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
-  "http_proxy", "https_proxy", "all_proxy", "no_proxy",
-  "GLOBAL_AGENT_HTTP_PROXY", "GLOBAL_AGENT_HTTPS_PROXY",
-];
-function cleanEnvForProxy() {
-  const env = { ...process.env };
-  for (const k of PROXY_ENV_BLACKLIST) delete env[k];
-  return env;
-}
+// 拉取交给受管服务：AppHost 及其子进程都在 Node 权限模型里，**发不出任何网络请求**，
+// 而受管 native 服务不允许再 spawn —— 所以代理改为服务内直连（runtime/service.mjs），
+// SSRF 加固（仅 http/https、屏蔽私网/回环、DNS 重绑校验、限大小/跳转/类型）也在那边。
 const getImageProxy = async (c) => {
   const url = c.req.query("url") || "";
   if (!url) return c.json({ ok: false, error: "url is required" }, 400);
@@ -216,36 +213,14 @@ const getImageProxy = async (c) => {
     return c.json({ ok: false, error: "blocked host (private/loopback)" }, 403);
   }
   try {
-    const out = await new Promise((resolve) => {
-      execFile(process.execPath, [PROXY_FETCH_SCRIPT, url], {
-        encoding: "buffer",
-        maxBuffer: 25 * 1024 * 1024,
-        timeout: 15000,
-        windowsHide: true,
-        env: cleanEnvForProxy(),
-      }, (err, stdout, stderr) => {
-        if (err) {
-          let msg = "fetch failed";
-          try {
-            const j = JSON.parse(stderr.toString("utf-8").split("\n").pop());
-            if (j && j.error) msg = j.error;
-          } catch { /* ignore */ }
-          return resolve({ ok: false, error: msg });
-        }
-        let meta = null;
-        try { meta = JSON.parse(stderr.toString("utf-8").trim().split("\n").pop()); } catch { /* ignore */ }
-        if (!meta || !meta.ok) {
-          return resolve({ ok: false, error: (meta && meta.error) || "fetch failed" });
-        }
-        resolve({ ok: true, ct: meta.ct, buf: stdout });
-      });
-    });
-    if (!out.ok) return c.json({ ok: false, error: out.error }, 502);
-    return new Response(out.buf, {
+    const out = await callService("/proxy", { url });
+    if (!out?.ok) return c.json({ ok: false, error: out?.error || "fetch failed" }, 502);
+    const buf = Buffer.from(out.base64, "base64");
+    return new Response(buf, {
       status: 200,
       headers: {
         "Content-Type": out.ct,
-        "Content-Length": String(out.buf.length),
+        "Content-Length": String(buf.length),
         "Cache-Control": "private, max-age=86400",
       },
     });
@@ -328,7 +303,8 @@ export default function (app, ctx) {
   // 凭据加密数据目录与 accounts.json 对齐（routes/tools/ws-monitor 同一路径）
   setCryptoDataDir(dataDir);
   const cacheDir = path.join(dataDir, "cache");
-  const templatePath = path.join(ctx.pluginDir, "assets", "plugin-page-template.html");
+  // v2：卡片界面是 ui/ 下的静态文档（由宿主持有本 App 的 ui/ 路由），
+  // 不再由这里读模板注入 pluginId —— 页面自己从 location 推导 appId。
 
   function ensureDir() {
     fs.mkdirSync(cacheDir, { recursive: true });
@@ -373,18 +349,6 @@ export default function (app, ctx) {
     const encrypted = list.map(encryptSensitiveFields);
     writeJson(path.join(dataDir, "accounts.json"), encrypted);
   }
-
-  app.get("/mail", (c) => {
-    const token = c.req.query("token") || "";
-    const theme = c.req.query("hana-theme") || "light";
-    let html = fs.readFileSync(templatePath, "utf-8");
-    html = html.replace("var PLUGIN_ID = 'your-plugin-id';", `var PLUGIN_ID = '${ctx.pluginId}';`);
-    html = html.replace(/<body>/, `<body data-hana-theme="${theme}">`);
-
-    const existing = accounts();
-
-    return c.html(html);
-  });
 
   const getAccounts = (c) => c.json({ ok: true, data: accounts() });
   const postAccounts = async (c) => {
@@ -1135,8 +1099,7 @@ export default function (app, ctx) {
   app.get("/image-proxy", getImageProxy);
 
   // ── 依赖安装状态查询（前端轮询用）──
-  app.get("/deps-status", (c) => {
-    const installing = fs.existsSync(INSTALL_LOCK);
+  app.get("/deps-status", (c) => {    const installing = fs.existsSync(installLockPath());
     const missing = [];
     // 检查各后端核心依赖
     const checks = [
@@ -1151,46 +1114,32 @@ export default function (app, ctx) {
   });
 
   // ── 桌面通知 ──
-  // 方法1：自定义 helper（捆绑 CJK 字体，obsidian 黑金风格）
-  // 方法2：Notification Hub helper（功能花哨但依赖系统字体）
-  // 方法3：mail-toast.cjs（node-notifier 降级）
-  const HELPER_EXE = path.join(ctx.pluginDir, "helper", "bin", "mail-toast-helper.exe");
-  const HUB_HELPER_EXE = path.join(ctx.pluginDir, "helper", "bin", "notification-toast-helper.exe");
-
+  // 拉起 .NET / node-notifier 助手要子进程，而 AppHost 的子进程没有网络也读不到
+  // 安装目录外的文件，所以交给受管服务去发（它保留原链路）。
   const postNotify = async (c) => {
     const body = await c.req.json().catch(() => ({}));
-    const subject = body.subject || "(无主题)";
-    const sender = body.sender || "";
-    const messageId = body.messageId || "";
-    const accountId = body.accountId || "";
-
-    // 方法1：mail-toast.cjs（node-notifier，经 Hana 服务器验证可用）
-    // Hana 服务器上下文中 execFile 只允许 spawn Node.js 子进程，无法直接启动 .NET WinForms EXE。
-    const toastScript = path.join(ctx.pluginDir, "helper", "mail-toast.cjs");
-    if (fs.existsSync(toastScript)) {
-      try {
-        const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-        const argsFile = path.join(os.tmpdir(), `hanako-mail-notify-${id}.json`);
-        fs.writeFileSync(argsFile, JSON.stringify({
-          subject, sender, messageId, accountId
-        }), "utf-8");
-
-        execFile(process.execPath, [toastScript, "--args-file", argsFile], {
-          cwd: ctx.pluginDir,
-          timeout: 20000,
-          env: { ...process.env, NODE_PATH: path.join(BACKEND_DIR, "node_modules") },
-        }, (err) => {
-          try { fs.unlinkSync(argsFile); } catch {}
-          if (err) console.warn("toast error:", err.message);
-        });
-        return c.json({ ok: true, method: "native" });
-      } catch (e) {
-        console.warn("toast failed:", e.message);
-      }
-    }
-
-    return c.json({ ok: true, method: "native" });
+    const res = await callService("/notify", {
+      subject: body.subject || "(无主题)",
+      sender: body.sender || "",
+      messageId: body.messageId || "",
+      accountId: body.accountId || "",
+    });
+    return c.json({ ok: res?.ok !== false, method: "native", error: res?.ok === false ? res.error : undefined });
   };
+
+  // ── AgentQQ 设备码授权（转发给受管服务：设备流程要发 HTTPS，AppHost 无网）──
+  // 令牌不经这条路径：服务拿到后直接写进加密的 accounts.json。
+  app.post("/agentqq/login/start", async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const r = await callService("/agentqq/login/start", { name: body.name || "" });
+    return c.json(r?.ok ? { ok: true, ...r.data } : { ok: false, error: r?.error || "启动授权失败" });
+  });
+
+  app.post("/agentqq/login/status", async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const r = await callService("/agentqq/login/status", { sessionId: body.sessionId || "" });
+    return c.json(r?.ok ? { ok: true, ...r.data } : { ok: false, error: r?.error || "查询授权状态失败" });
+  });
 
   const getClicksLatest = (c) => {
     const clickFile = path.join(os.tmpdir(), "hanako-mail-click.json");

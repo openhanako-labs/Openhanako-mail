@@ -40,12 +40,10 @@ const clickFile = path.join(os.tmpdir(), "hanako-mail-click.json");
 // 查找 node-notifier 模块路径
 function findNodeNotifier() {
   const candidates = [
-    // 1) 本插件后端依赖（发布后用户 cd backend && npm install 即有）
+    // 1) 本应用后端依赖（随包发布，backend/node_modules）
     path.join(__dirname, "..", "backend", "node_modules", "node-notifier"),
     // 2) 仓库根依赖（开发环境）
     path.join(__dirname, "..", "node_modules", "node-notifier"),
-    // 3) 兜底：WorkBuddy 内置 node workspace（开发机专用，发布环境不依赖）
-    path.join(os.homedir(), ".workbuddy", "binaries", "node", "workspace", "node_modules", "node-notifier"),
   ];
   for (const dir of candidates) {
     try {
