@@ -282,7 +282,7 @@ AppHost（能 spawn，收不到邮件事件）→ 每 5 秒取队列 + 拉起 ma
 | `IMAP_PASS not set` | 个人邮箱未填授权码 | 在账号配置中填写 `IMAP/SMTP` 授权码，或配置 `backend/.env` |
 | `CLAWEMAIL_API_KEY not set` | 未填 API Key | 在账号配置填写 apiKey |
 | `@clawemail/node-sdk 未安装` | 后端依赖缺失 | 依赖应随包发布；若缺失请重新安装应用 |
-| 标记为已读后远端未变 | 缺少 `mail-cli` | 安装 SDK 的 `mail-cli`；UI 会提示"本地已标记（远端标记失败）" |
+| 标记为已读后远端未变 | 令牌过期或网络异常 | 检查账号授权状态；ClawEmail 的标记走 SDK 的 HTTP transport |
 | AgentQQ 取消已读无效 | 官方 REST 没有该接口 | 预期行为，后端返回说明，非 bug |
 | 附件预览/下载 404 | 附件 partId 不匹配 | 确认后端 `read()` 返回的 `attachments[].id` 与请求一致 |
 
