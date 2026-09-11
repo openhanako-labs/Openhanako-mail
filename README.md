@@ -129,7 +129,9 @@ Hanako Mail
 │   ├── cred-crypto.mjs     凭据 AES-256-GCM 加解密（统一实现）
 │   ├── blocklist.mjs       黑/白名单
 │   └── common.mjs          公共工具函数
-├── ui/             卡片界面（v1 的 assets/plugin-page-template.html 已迁至此）
+├── ui/             卡片界面与封面（v1 的 assets/plugin-page-template.html 已迁至此）
+│                   ├── mail.html   卡片页面
+│                   └── face.png    卡片中心 / 黑板上的封面（manifest 的 contributes.cards[].face）
 ├── lib/            v2 装配层（env / ctx 投影 / 工具与路由注册 / 受管服务句柄 / 通知派发）
 ├── scripts/        自检（smoke-load / smoke-bridge）与图标生成
 ├── helper/         桌面通知（mail-toast.cjs，由 AppHost 拉起）

@@ -196,6 +196,31 @@ check("readyMarker 与服务端一致",
   rtHost.includes("HANA_MAIL_SERVICE_READY")
   && fs.readFileSync(path.join(ROOT, "runtime", "service.mjs"), "utf-8").includes("HANA_MAIL_SERVICE_READY"));
 
+// 卡片封面（face）。官方校验器**不查它**，而写坏了只会静默降级成“未声明”——
+// 所以把运行时那套规则（bundle/index.js 的 wkr 函数）在这里重实现一遍作为断言：
+// 相对 ui/ 目录、不能用反斜杠、分段不能空/./../以.开头、扩展名限 png|webp|svg、文件必须存在。
+const FACE_EXTS = new Set([".png", ".webp", ".svg"]);
+function faceProblem(image) {
+  const o = String(image).trim();
+  if (!o) return "empty";
+  if (o.includes("\\") || o.includes("\0")) return "illegal characters";
+  if (o.startsWith("/")) return "must be relative to ui/";
+  const segs = o.split("/");
+  if (segs.some((s) => !s || s === "." || s === ".." || s.startsWith("."))) return "escapes ui/";
+  const ext = path.extname(segs[segs.length - 1]).toLowerCase();
+  if (!FACE_EXTS.has(ext)) return `bad extension "${ext || "none"}"`;
+  const abs = path.join(ROOT, "ui", ...segs);
+  try { if (!fs.statSync(abs).isFile()) return `not a file at ui/${segs.join("/")}`; }
+  catch { return `missing ui/${segs.join("/")}`; }
+  return null;
+}
+for (const [i, card] of (manifest.contributes?.cards || []).entries()) {
+  if (card.face === undefined) continue;
+  const img = card.face && typeof card.face === "object" ? card.face.image : undefined;
+  const prob = typeof img === "string" ? faceProblem(img) : "face.image must be a string";
+  check(`卡片 "${card.id}" 的 face 声明合法`, prob === null, prob || String(img));
+}
+
 dispose();
 fs.rmSync(home, { recursive: true, force: true });
 
