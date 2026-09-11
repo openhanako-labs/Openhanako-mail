@@ -4,7 +4,7 @@
 
 HanaAgent 原生多邮箱聚合插件。支持 ClawEmail、AgentQQ 官方 API，以及个人邮箱 IMAP/SMTP。
 
-## v2 App（当前主线，v0.3.0）
+## v2 App（当前主线，v0.4.0）
 
 本仓库根目录**就是一个 v2 App 包**（`manifestVersion: 2`），安装后落在 `<HANA_HOME>/apps/hanako-mail/`。
 v1（`<HANA_HOME>/plugins/`，`manifestVersion` 缺失或为 1）已被官方永久冻结，不再作为发布分支。
@@ -114,23 +114,26 @@ Hanako Mail
 │                   与 ctx.routes.register() 互斥，两边同时存在整应用装载即 failed
 │                   （app-host-entry.js:3233 / 4201）
 ├── runtime/
-│   └── service.mjs  受管 native 服务：监活、inbox、出站 HTTP、图片代理、通知、迁移
-├── backend/        后端引擎（跑在服务里）
-│   ├── inbox.mjs           统一入口（模块 + CLI 命令表）
+│   └── service.mjs  受管 native 服务：收件监听、inbox 命令表、出站 HTTP、
+│                    图片代理、通知入队、数据迁移、AgentQQ 设备码授权
+├── backend/        后端引擎（全部跑在服务里）
+│   ├── inbox.mjs           命令表（唯一入口，服务直接调用）
 │   ├── worker-client.mjs   宿主侧客户端：把命令转发给服务
 │   ├── net-child.mjs       宿主侧客户端：把出站 HTTP 转发给服务
-│   ├── clawemail-backend   ClawEmail SDK 后端
-│   ├── agentqq-backend     AgentQQ agently-cli 后端
+│   ├── clawemail-backend   ClawEmail（@claw.163.com，SDK 进程内）
+│   ├── agentqq-backend     AgentQQ（@agent.qq.com，REST 直连）
+│   ├── agentqq-auth.mjs    AgentQQ OAuth 设备码 / 刷新（纯协议）
 │   ├── imap-backend        IMAP/SMTP 个人邮箱后端
-│   ├── imap-idle.mjs       IMAP 实时收件监听（IDLE + 系统通知，v0.1.6）
+│   ├── imap-idle.mjs       IMAP 实时收件监听（IDLE）
+│   ├── ws-monitor.mjs      ClawEmail WebSocket 实时收件监听
 │   ├── cred-crypto.mjs     凭据 AES-256-GCM 加解密（统一实现）
 │   ├── blocklist.mjs       黑/白名单
 │   └── common.mjs          公共工具函数
-├── ui/             卡片界面（v2 起；v1 的 assets/plugin-page-template.html 已迁至 ui/mail.html）
-├── lib/            v2 装配层（env / ctx 投影 / 工具与路由注册 / 受管服务句柄）
-├── scripts/        自检与图标生成
-├── helper/         桌面通知助手
-└── manifest.json   插件清单
+├── ui/             卡片界面（v1 的 assets/plugin-page-template.html 已迁至此）
+├── lib/            v2 装配层（env / ctx 投影 / 工具与路由注册 / 受管服务句柄 / 通知派发）
+├── scripts/        自检（smoke-load / smoke-bridge）与图标生成
+├── helper/         桌面通知（mail-toast.cjs，由 AppHost 拉起）
+└── manifest.json   应用清单（v2）
 ```
 
 > **执行模型**：http/tools 的所有后端命令（列表/读信/发送/同步/搜索/附件等）不再自己 spawn 子进程，
@@ -199,7 +202,7 @@ AppHost（能 spawn，收不到邮件事件）→ 每 5 秒取队列 + 拉起 ma
 
 ## 后端能力矩阵
 
-不同后端支持的 API 能力不同（截至 v0.1.x）。下表为权威参考，UI 已按此实现；不支持的操作会返回明确错误而非静默失败。
+不同后端支持的 API 能力不同。下表为权威参考，UI 已按此实现；不支持的操作会返回明确错误而非静默失败。
 
 | 能力 | ClawEmail | AgentQQ | 个人邮箱 (IMAP/SMTP) |
 |------|:---------:|:-------:|:-------------------:|
@@ -218,7 +221,7 @@ AppHost（能 spawn，收不到邮件事件）→ 每 5 秒取队列 + 拉起 ma
 | 文件夹列表 | ✅ | ✅ | ✅ |
 
 > 说明：
-> - AgentQQ 的"移动 / 取消已读 / 批量删除"受底层 `agently-cli` 能力限制，当前会返回清晰错误提示，不会静默吞掉。
+> - AgentQQ 的"移动"对应官方 REST 的软删除（移入垃圾箱，保留 30 天）；没有独立的"标记已读/取消已读"接口，会返回说明而非静默吞掉。
 > - 个人邮箱搜索为服务端检索（v0.1.5 起，IMAP SEARCH：发件人/主题）。
 > - 草稿保存仅 IMAP 后端支持（v0.1.5 起），保存后可进入文件夹列表的「Drafts / 草稿」查看；ClawEmail / AgentQQ 会返回明确错误。
 
@@ -228,7 +231,7 @@ AppHost（能 spawn，收不到邮件事件）→ 每 5 秒取队列 + 拉起 ma
 - **凭据传递**：后端凭据经进程环境变量（`CLAWEMAIL_API_KEY` / `IMAP_*` / `SMTP_*`）从 `accounts.json` 透传，子进程仅在缺失时回退读 `backend/.env`。
 - **正文渲染沙箱**：HTML 正文在 `sandbox` 属性 iframe 中渲染（`srcdoc`），防止邮件内脚本逃逸。
 - **外网图片代理**：正文中的外网 `<img>` / CSS `url()` 改写为同源 `/image-proxy?url=...`，由独立子进程拉取。代理仅接受 http/https，初始 URL 与每次重定向均校验 host（屏蔽私网/回环）、DNS 解析后校验解析 IP（防 rebinding）、限制响应 8MB，规避 SSRF。
-- **无 shell 执行**：所有外部 CLI（`agently-cli` / `mail-cli`）均解析出真实 JS 入口后用 `spawn(node, [entry, ...args], { shell: false })` 执行，用户可控参数不经过 cmd.exe 解析，杜绝命令注入。
+- **不执行任何外部 CLI**（v0.4.0 起）：三个后端全部改为进程内调用 —— ClawEmail 走 SDK 的 HTTP transport、AgentQQ 走官方 REST、IMAP/SMTP 走 `imap`/`nodemailer` 库。用户可控参数从不进入命令行，命令注入面为零。
 - **LLM 凭据不回前端**：总结/翻译/连接测试的 API Key 一律服务端回源（宿主 `provider:credentials` / agent `config.yaml`），浏览器与 localStorage 不接触明文 Key。
 
 > 说明：v0.1.0 曾规划「外部收件人需桌面确认后发送」（`identity.mjs` 访客意识 + `_pending_send` 队列），该机制无消费者、队列空转，已在 v0.1.2 移除。当前 send / reply / forward 直接执行；如后续需要「外部收件人确认」，应实现真正的确认消费者。
@@ -280,7 +283,7 @@ AppHost（能 spawn，收不到邮件事件）→ 每 5 秒取队列 + 拉起 ma
 | `CLAWEMAIL_API_KEY not set` | 未填 API Key | 在账号配置填写 apiKey |
 | `@clawemail/node-sdk 未安装` | 后端依赖缺失 | 依赖应随包发布；若缺失请重新安装应用 |
 | 标记为已读后远端未变 | 缺少 `mail-cli` | 安装 SDK 的 `mail-cli`；UI 会提示"本地已标记（远端标记失败）" |
-| AgentQQ 移动/取消已读报错 | CLI 不支持该操作 | 预期行为，后端返回明确错误，非 bug |
+| AgentQQ 取消已读无效 | 官方 REST 没有该接口 | 预期行为，后端返回说明，非 bug |
 | 附件预览/下载 404 | 附件 partId 不匹配 | 确认后端 `read()` 返回的 `attachments[].id` 与请求一致 |
 
 ## 开发
