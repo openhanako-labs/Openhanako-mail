@@ -706,8 +706,17 @@ setTimeout(function(){try{window.parent.postMessage({source:'hana-plugin',type:'
 <div class="noti-container" id="noti-container"></div>
 
 <script>
-var PLUGIN_ID = 'your-plugin-id';
+// v2：卡片文档由宿主持有在 /api/apps/<appId>/ui/ 下，appId 直接从路径推导，
+// 不再由后端读模板注入 —— 页面因此对 App 改名 / 换安装位置都免疫。
+var APP_ID = decodeURIComponent(location.pathname.split('/')[3] || 'hanako-mail');
+var API_BASE = '/api/apps/' + APP_ID + '/routes';
 var _t = new URL(location.href).searchParams.get('token');
+
+// 宿主会在 ui/ 路由上带 hana-theme；优先于本地保存的偏好。
+(function () {
+  var q = new URL(location.href).searchParams.get('hana-theme');
+  if (q === 'dark' || q === 'light') { try { localStorage.setItem('plugin-theme', q); } catch (e) {} }
+})();
 
 // 外网图片是否走插件服务端代理（/image-proxy）。
 // 设为 true：把正文里的外网 <img src> / CSS url() 改写为同源 /image-proxy?url=...，
@@ -716,7 +725,7 @@ var _t = new URL(location.href).searchParams.get('token');
 // 在 Hana dev 环境和正式版中均可用（已验证带 token 返回 HTTP 200 逐字节一致）。
 var USE_IMAGE_PROXY = true;
 function api(path, options) {
-  var u = '/api/plugins/' + PLUGIN_ID + path + (_t ? (path.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(_t) : '');
+  var u = API_BASE + path + (_t ? (path.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(_t) : '');
   return fetch(u, { headers: { 'Content-Type': 'application/json' }, ...options });
 }
 
@@ -869,7 +878,7 @@ function attachmentUrl(messageId, partId, download) {
     '?accountId=' + encodeURIComponent(state.accountId || '') +
     (download ? '&download=1' : '') +
     (_t ? '&token=' + encodeURIComponent(_t) : '');
-  return '/api/plugins/' + PLUGIN_ID + p;
+  return API_BASE + p;
 }
 
 function humanSize(bytes) {
@@ -986,7 +995,7 @@ function rewriteImages(html, atts, messageId) {
 
 // 构建图片代理 URL（与 api() 一致，自动带上 token）
 function proxyUrl(externalUrl) {
-  return '/api/plugins/' + PLUGIN_ID + '/image-proxy?url=' + encodeURIComponent(externalUrl) +
+  return API_BASE + '/image-proxy?url=' + encodeURIComponent(externalUrl) +
     (_t ? '&token=' + encodeURIComponent(_t) : '');
 }
 

@@ -10,6 +10,8 @@
 //   4) 内置默认值
 // ─────────────────────────────────────────────────────────────
 
+import { postJson } from "./net-child.mjs";
+
 // 环境变量仅作本地覆盖兜底（自托管 / 调试用），生产环境由宿主下发。
 const ENV_BASE = (process.env.HANAKO_LLM_BASE_URL || process.env.OPENAI_BASE_URL || process.env.OPENAI_API_BASE || "").replace(/\/$/, "");
 const ENV_KEY = process.env.HANAKO_LLM_API_KEY || process.env.OPENAI_API_KEY || "";
@@ -83,17 +85,23 @@ export async function chatCompletion(systemOrMessages, user, opts = {}) {
 
   const { endpoint, headers, body } = buildRequest(api, baseUrl, apiKey, model, messages, opts);
 
-  const res = await fetch(endpoint, {
+  // v2：AppHost 拒绝裸网络，请求落到子进程发出（见 backend/net-child.mjs）。
+  const res = await postJson(endpoint, {
     method: "POST",
     headers,
     body: JSON.stringify(body),
+    timeoutMs: Number(opts.timeoutMs) || 120000,
   });
 
   if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`LLM 请求失败 ${res.status}: ${txt.slice(0, 300)}`);
+    throw new Error(`LLM 请求失败: ${String(res.error || "未知网络错误").slice(0, 300)}`);
   }
-  const data = await res.json();
+  if (res.status < 200 || res.status >= 300) {
+    const txt = res.text !== undefined ? res.text : JSON.stringify(res.json || {});
+    throw new Error(`LLM 请求失败 ${res.status}: ${String(txt).slice(0, 300)}`);
+  }
+  const data = res.json;
+  if (!data || typeof data !== "object") throw new Error("LLM 返回不是 JSON");
   // 兼容推理模型（agnes / minimax / 智谱等）：content 可能是空，思考在 reasoning_content
   const msg = data?.choices?.[0]?.message;
   const content = msg?.content || msg?.reasoning_content || data?.content?.[0]?.text;

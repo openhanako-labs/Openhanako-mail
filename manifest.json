@@ -1,1 +1,32 @@
-{"trust":"full-access","description":"多邮箱聚合管理插件：IMAP/SMTP + 官方 API，支持多账号、文件夹、已读未读、回复。","minAppVersion":"0.0.0","capabilities":["resource.read","resource.write"],"id":"hanako-mail","version":"0.1.16","manifestVersion":1,"name":"Hanako Mail","ui":{"hostCapabilities":["external.open","clipboard.writeText","resource.read","resource.write"]},"contributes":{"tools":[{"source":"tools/accounts.js","title":"账号管理"},{"source":"tools/folders.js","title":"文件夹列表"},{"source":"tools/messages.js","title":"邮件列表"},{"source":"tools/sync.js","title":"同步邮件"},{"source":"tools/send.js","title":"发送邮件"}],"cards":[{"icon":"<svg viewBox='0 0 24 24' fill='none' stroke='#6aa7ff' stroke-width='1.5'><rect x='3' y='3' width='18' height='18' rx='3'/><path d='M3 7l9 6 9-6'/></svg>","route":"/mail","id":"mail-page","title":{"zh":"邮件","en":"Mail"},"type":"webview","description":"多邮箱聚合管理：IMAP/SMTP + 官方 API"}]}}
+{
+  "manifestVersion": 2,
+  "id": "hanako-mail",
+  "name": "Hanako Mail",
+  "version": "0.3.5",
+  "description": "多邮箱聚合管理：ClawEmail / AgentQQ 官方 API + 个人邮箱 IMAP/SMTP，支持多账号、文件夹、已读未读、回复、搜索、AI 总结翻译与实时收件通知。",
+  "minAppVersion": "0.946.2",
+  "entry": "index.js",
+  "icon": "assets/icon.png",
+  "capabilities": [
+    "app/tools.expose-to-model",
+    "app/process.spawn",
+    "app/runtime.execute",
+    "app/runtime.native",
+    "app/runtime.network",
+    "app/models.read",
+    "app/provider.credentials.read",
+    "app/ui.open-external",
+    "app/ui.clipboard-write"
+  ],
+  "contributes": {
+    "cards": [
+      {
+        "id": "mail-page",
+        "title": "邮件",
+        "description": "多邮箱聚合管理：IMAP/SMTP + 官方 API",
+        "route": "/mail.html",
+        "cardForm": "flush"
+      }
+    ]
+  }
+}

@@ -1,43 +1,32 @@
 /**
- * AgentQQ 后端 — 封装 agently-cli
+ * AgentQQ 后端 —— 依赖外部 `agently-cli`，**在 v2 下不可用**。
  *
- * 完整能力：list / search / read / send / reply / forward / attachment
- * 所有输出：{ ok: true, data: {...} }
+ * 原因：它必须 spawn 子进程，而本模块跑在受管 native 服务里，
+ * 那个进程被 Job Object 管着、不能再 spawn（实测 spawn EPERM）。
+ * 与 ClawEmail 不同，这个 CLI 没有等价的进程内 SDK，所以只能如实报错。
+ *
+ * 要支持 AgentQQ 的话需要换一个不靠子进程的接入方式（官方 API 或 SDK）。
+ * 在那之前，用 @agent.qq.com 账号会看到明确的说明，而不是神秘的 EPERM。
  */
 
-import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// ── 解析 agently-cli 真实 JS 入口（绕过 .cmd shim，避免 shell 拼接注入） ──
-// npm 安装的 agently-cli 是 Windows shim（.cmd），内部最终执行：
-//   node "<dp0>\node_modules\@tencent-qqmail\agently-cli\scripts\run.js" %*
-// 我们直接解析出 run.js 路径，用 spawn(node, [entry, ...args], {shell:false})
-// 传参，用户可控参数（to/subject/body/keyword 等）不再经过 cmd.exe 解析，
-// 从根本上消除命令注入（原实现用 \" 转义在 cmd.exe 下无效，可被 & | 等绕过）。
+function unsupported() {
+  throw new Error(
+    "AgentQQ 后端在当前架构下不可用：它依赖外部 agently-cli 子进程，"
+    + "而受管运行时不允许再创建子进程（spawn EPERM）。"
+    + "请改用 IMAP 个人邮箱或 ClawEmail 账号。",
+  );
+}
+
+// 保留入口探测（仅供诊断显示用）
 function resolveCliEntry() {
-  // 1) 本地安装（backend/node_modules/...）
   const local = path.join(__dirname, "node_modules", "@tencent-qqmail", "agently-cli", "scripts", "run.js");
-  if (fs.existsSync(local)) return local;
-  // 2) 全局 npm shim：定位 agently-cli.cmd 并解析其指向的 run.js
-  try {
-    const which = process.platform === "win32" ? "where" : "which";
-    const out = execFileSync(which, ["agently-cli"], { encoding: "utf8", windowsHide: true, shell: process.platform === "win32" });
-    const first = String(out).split(/\r?\n/).map(s => s.trim()).find(Boolean);
-    if (!first) return null;
-    const cmdPath = /\.cmd$/i.test(first) ? first : `${first}.cmd`;
-    if (!fs.existsSync(cmdPath)) return null;
-    const content = fs.readFileSync(cmdPath, "utf-8");
-    const m = content.match(/%dp0%\\node_modules\\([^"%\s]+)/i);
-    if (m) {
-      const p = path.join(path.dirname(cmdPath), "node_modules", m[1].trim());
-      if (fs.existsSync(p)) return p;
-    }
-  } catch { /* 继续走下方错误路径 */ }
-  return null;
+  return fs.existsSync(local) ? local : null;
 }
 
 let _cliEntry = undefined;
@@ -46,43 +35,12 @@ function getCliEntry() {
   return _cliEntry;
 }
 
-function runAgentlyCli(args, timeout = 30000) {
-  return new Promise((resolve, reject) => {
-    const entry = getCliEntry();
-    if (!entry) {
-      return reject(new Error("未找到 agently-cli 入口（@tencent-qqmail/agently-cli 未安装或不在 PATH），请先执行: npm install -g agently-cli"));
-    }
-    // shell:false + 数组参数 → 用户输入永不进入 cmd.exe 解析，无注入面
-    const proc = spawn(process.execPath, [entry, ...args], {
-      encoding: "utf-8",
-      timeout,
-      windowsHide: true,
-      shell: false,
-    });
-
-    let stdout = "";
-    let stderr = "";
-
-    proc.stdout.on("data", (chunk) => { stdout += chunk; });
-    proc.stderr.on("data", (chunk) => { stderr += chunk; });
-
-    proc.on("close", (code) => {
-      if (code !== 0) {
-        return reject(new Error(`agently-cli exit ${code}: ${stderr.trim() || stdout.slice(-200)}`));
-      }
-      try {
-        const jsonMatch = stdout.match(/\{[\s\S]*\}/);
-        if (jsonMatch) resolve(JSON.parse(jsonMatch[0]));
-        else reject(new Error(`agently-cli no JSON in output: ${stdout.slice(0, 200)}`));
-      } catch (e) {
-        reject(new Error(`agently-cli JSON parse failed: ${e.message}`));
-      }
-    });
-
-    proc.on("error", (err) => {
-      reject(new Error(`spawn agently-cli failed: ${err.message}`));
-    });
-  });
+function runAgentlyCli() {
+  return Promise.reject(new Error(
+    "AgentQQ 后端在当前架构下不可用：它依赖外部 agently-cli 子进程，"
+    + "而受管运行时不允许再创建子进程（spawn EPERM）。"
+    + "请改用 IMAP 个人邮箱或 ClawEmail 账号。",
+  ));
 }
 
 // ── 列表/搜索 ──────────────────────────────────────────

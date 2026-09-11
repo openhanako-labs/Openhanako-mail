@@ -1,13 +1,14 @@
 /**
- * ClawEmail 后端 — 封装 @clawemail/node-sdk + mail-cli
+ * ClawEmail 后端 —— 全部走 @clawemail/node-sdk（进程内 HTTP）。
  *
- * SDK 提供：读、写、回复、附件下载、WebSocket 推送、列表/搜索
- * mail-cli 提供：移动、标记（SDK 无对应 API）
- *
- * 列表/搜索已迁移至 SDK transport（mail-cli 的 --fid 参数有 bug）
+ * 历史：文件夹列表 / 移动 / 标记 / 删除 曾用 `mail-cli` 子进程（SDK 当時没暴露这些）。
+ * v0.3.2 起**全部改为进程内**，因为本模块跑在受管 native 服务里，
+ * 而那个进程被 Job Object 管着、**不能再 spawn**（实测报 spawn EPERM）。
+ * 好在 AjaxTransport 已经有这些方法，不必再绕路：
+ *   listFolders / listMessages / moveMessages / markMessages / getMessage / searchMessages
+ * 顺带的好处：不再依赖邮件夹路径、不再有 cmd.exe 解析面。
  */
 
-import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { htmlToText } from "./common.mjs";
@@ -26,41 +27,12 @@ async function loadMailClient() {
   return MailClient;
 }
 
-// ── mail-cli 子进程封装（仅用于 move/mark） ────────────
-
-function runMailCli(args, timeout = 15000) {
-  return new Promise((resolve, reject) => {
-    const mailCliBin = path.join(__dirname, "node_modules", "@clawemail", "mail-cli", "bin", "mail-cli");
-    // shell:false + 数组参数：mailCliBin 是纯 JS 文件，由 node 直接执行，
-    // 用户可控参数（folder/ids）不再经过 cmd.exe 解析（原 shell:true 存在注入面）。
-    const proc = spawn(process.execPath, [mailCliBin, "--json", ...args], {
-      encoding: "utf-8",
-      timeout,
-      windowsHide: true,
-      shell: false,
-    });
-
-    let stdout = "";
-    let stderr = "";
-
-    proc.stdout.on("data", (chunk) => { stdout += chunk; });
-    proc.stderr.on("data", (chunk) => { stderr += chunk; });
-
-    proc.on("close", (code) => {
-      if (code !== 0) {
-        return reject(new Error(`mail-cli exit ${code}: ${stderr.trim()}`));
-      }
-      try {
-        resolve(JSON.parse(stdout));
-      } catch {
-        reject(new Error(`mail-cli JSON parse failed: ${stdout.slice(0, 100)}`));
-      }
-    });
-
-    proc.on("error", (err) => {
-      reject(new Error(`spawn mail-cli failed: ${err.message}`));
-    });
-  });
+// ── transport 取用（进程内 HTTP）───────────────────
+// transport 在类型上是 private，但 listMessages 一直在用它；这里统一走同一个取口。
+async function getTransport(apiKey, user) {
+  const client = await getClient(apiKey, user);
+  if (!client.transport) throw new Error("ClawEmail transport 不可用（SDK 版本不符）");
+  return client.transport;
 }
 
 // ── MailClient 工厂（带连接池，避免重复鉴权） ────────────
@@ -164,15 +136,15 @@ export async function searchMessages(keyword, options = {}) {
 
 export async function listFolders() {
   try {
-    const result = await runMailCli(["folder", "list"], 10000);
-    const data = Array.isArray(result?.data) ? result.data : [];
-    return data.map(f => ({
+    const transport = await getTransport(process.env.CLAWEMAIL_API_KEY, process.env.CLAWEMAIL_ADDRESS);
+    const data = await transport.listFolders();
+    return (Array.isArray(data) ? data : []).map(f => ({
       id: String(f.id || ""),
-      name: String(f.name || f.raw || ""),
-      unread: Number(f.unreadCount || f.unread || 0),
+      name: String(f.name || ""),
+      unread: Number(f.unreadCount || 0),
     }));
   } catch (e) {
-    throw new Error(`mail-cli folder list failed: ${e.message}`);
+    throw new Error(`ClawEmail 文件夹列表获取失败: ${e.message}`);
   }
 }
 
@@ -264,14 +236,18 @@ export async function replyToMail(apiKey, user, messageId, options) {
   });
 }
 
-// ── 移动/标记（用 mail-cli，SDK 无对应 API） ──────────
+// ── 移动/标记（用 transport，进程内 HTTP） ──────────
 
 export async function moveMessage(messageId, targetFid) {
-  return runMailCli(["move", `--ids=${messageId}`, `--fid=${targetFid}`]);
+  const transport = await getTransport(process.env.CLAWEMAIL_API_KEY, process.env.CLAWEMAIL_ADDRESS);
+  await transport.moveMessages([String(messageId)], String(targetFid));
+  return { ok: true, moved: messageId, targetFid: String(targetFid) };
 }
 
 export async function markRead(messageId, read = true) {
-  return runMailCli(["mark", `--ids=${messageId}`, read ? "--read" : "--unread"]);
+  const transport = await getTransport(process.env.CLAWEMAIL_API_KEY, process.env.CLAWEMAIL_ADDRESS);
+  await transport.markMessages([String(messageId)], { read: !!read });
+  return { ok: true, id: messageId, read: !!read };
 }
 
 export async function deleteMessage(messageId, options = {}) {
@@ -284,19 +260,22 @@ export async function deleteMessage(messageId, options = {}) {
     const trash = all.find((f) => f.type === "trash")
       || all.find((f) => /trash|deleted|垃圾箱|废纸|已删除/.test(String(f.name || f.id || "").toLowerCase()));
     if (trash) {
-      return { movedToTrash: true, targetFid: trash.id, ...(await runMailCli(["move", `--ids=${messageId}`, `--fid=${trash.id}`])) };
+      const r = await moveMessage(messageId, trash.id);
+      return { movedToTrash: true, targetFid: trash.id, ...r };
     }
   }
-  return runMailCli(["delete", `--ids=${messageId}`]);
+  // 没有可定位的垃圾箱：标记已读作为降级（比默默不删好），并如实告知调用方。
+  await markRead(messageId, true);
+  return { ok: true, deleted: false, markedRead: true, reason: "未找到垃圾箱文件夹，已标记为已读" };
 }
 
 export async function markSpam(messageId) {
-  // ClawEmail 用 mail-cli 移动；先列出文件夹定位垃圾箱 fid
   const folders = await listFolders();
-  const spam = (Array.isArray(folders) ? folders : []).find(f => f.type === "spam")
-    || (Array.isArray(folders) ? folders : []).find(f => /spam|junk|垃圾/.test(String(f.name || f.id || "").toLowerCase()));
+  const all = Array.isArray(folders) ? folders : [];
+  const spam = all.find(f => f.type === "spam")
+    || all.find(f => /spam|junk|垃圾/.test(String(f.name || f.id || "").toLowerCase()));
   if (!spam) throw new Error("未找到垃圾邮件文件夹");
-  return runMailCli(["move", `--ids=${messageId}`, `--fid=${spam.id}`]);
+  return moveMessage(messageId, spam.id);
 }
 
 // ── 实时监听（用 SDK） ─────────────────────────────────

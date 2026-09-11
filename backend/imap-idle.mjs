@@ -16,25 +16,26 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
-import { execFile } from "node:child_process";
 import { simpleParser } from "mailparser";
 import { getImapConfig, connectImap, openBox } from "./imap-backend.mjs";
 import { setCryptoDataDir, decryptSensitiveFields } from "./cred-crypto.mjs";
+import { runtimeDataDir } from "../lib/env.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-function getDataDir() {
-  return process.env.HANAKO_PLUGIN_DATA || path.join(os.homedir(), ".hanako", "plugin-data", "hanako-mail");
-}
-
-const DATA_DIR = getDataDir();
+// 数据目录由主进程经 HANAKO_PLUGIN_DATA 传入（v1 的回退路径曾经少一层，
+// 导致读到空目录 → 账号数为 0 → 进程空转退出 → 父进程每 10 秒重启一次）。
+// v2 统一走 lib/env.mjs，回退值与其它后端一致。
+const DATA_DIR = runtimeDataDir();
 const LOG_PATH = path.join(DATA_DIR, "imap-idle.log");
 const POLL_FALLBACK_MS = 2 * 60 * 1000; // 不支持 IDLE 时降级轮询间隔
 const MAX_FETCH_PER_EVENT = 5;          // 单次事件最多拉取/通知的邮件数
 
 function log(level, msg, data) {
   const ts = new Date().toISOString();
-  const line = data ? `[${ts}] [${level}] ${msg} ${JSON.stringify(data)}` : `[${ts}] [${level}] ${msg}`;
+  // `data !== undefined`：v1 里写成 `data ?`，于是「账号数量 0」被打成空白 ——
+  // 恰恰把关键信息遮住了。
+  const line = data !== undefined ? `[${ts}] [${level}] ${msg} ${JSON.stringify(data)}` : `[${ts}] [${level}] ${msg}`;
   try { fs.appendFileSync(LOG_PATH, line + "\n"); } catch {}
   process.stderr.write(line + "\n");
 }
@@ -69,24 +70,22 @@ function saveMail(accountId, mail) {
   }
 }
 
-// ── 系统桌面通知（与 ws-monitor 同链路） ──
+// ── 系统桌面通知：写队列，由 AppHost 取走并派发 ──
+//
+// 本模块现在跑在受管 native 服务里，**不能 spawn**（Job Object → EPERM），
+// 而 Windows 通知必须拉起一个进程。所以写队列，让有 --allow-child-process 的
+// AppHost 定时来取（见 http/ui.js 的 drainNotifications）。
 function notifyDesktop(subject, sender, messageId, accountId) {
   try {
-    const toastScript = path.join(__dirname, "..", "helper", "mail-toast.cjs");
-    if (!fs.existsSync(toastScript)) { log("WARN", "mail-toast.cjs 不存在"); return; }
-    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    const argsFile = path.join(DATA_DIR, `notify-args-${id}.json`);
-    fs.writeFileSync(argsFile, JSON.stringify({ subject, sender, messageId, accountId }), "utf-8");
-    execFile(process.execPath, [toastScript, "--args-file", argsFile], {
-      cwd: path.join(__dirname, ".."),
-      windowsHide: true,
-      env: { ...process.env, NODE_PATH: path.join(__dirname, "node_modules") },
-    }, (err) => {
-      try { fs.unlinkSync(argsFile); } catch {}
-      if (err) log("WARN", "桌面通知失败", { err: err.message });
-    });
+    const dir = path.join(DATA_DIR, "_pending_notify");
+    fs.mkdirSync(dir, { recursive: true });
+    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    fs.writeFileSync(path.join(dir, `${id}.json`), JSON.stringify({
+      subject: subject || "(无主题)", sender: sender || "", messageId: messageId || "",
+      accountId: accountId || "", queuedAt: new Date().toISOString(),
+    }), "utf-8");
   } catch (e) {
-    log("WARN", "桌面通知失败", { err: e.message });
+    log("WARN", "桌面通知入队失败", { err: e.message });
   }
 }
 
@@ -135,9 +134,9 @@ async function fetchNewMails(imap, limit = MAX_FETCH_PER_EVENT) {
 async function watchAccount(account) {
   const email = account.email;
   const accountId = account.id;
-  if (!email || accountId == null) return;
+  if (!email || accountId == null) return null;
   const lower = String(email).toLowerCase();
-  if (lower.endsWith("@claw.163.com") || lower.endsWith("@agent.qq.com")) return; // 非 IMAP 后端
+  if (lower.endsWith("@claw.163.com") || lower.endsWith("@agent.qq.com")) return null; // 非 IMAP 后端
 
   const cfg = account.config || {};
   const processed = loadProcessed(accountId);
@@ -227,31 +226,65 @@ async function watchAccount(account) {
   return () => { closed = true; if (reconnectTimer) clearTimeout(reconnectTimer); if (fallbackTimer) clearInterval(fallbackTimer); try { if (imap) imap.end(); } catch {} cleanup(); };
 }
 
-// ── 启动全部 IMAP 账号 ──
-const stopFns = [];
-export async function startAll() {
-  try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
+// ── 启动全部 IMAP 账号（可重复调用：只补启动新增账号，不重复连接已有） ──
+const RECONCILE_MS = 60 * 1000;
+const stopFns = new Map(); // accountId -> stopFn（仅活跃监听）
+let reconcileTimer = null;
+let running = false;
+
+async function reconcile() {
   const accounts = loadAccounts();
-  log("INFO", "数据目录", DATA_DIR);
-  log("INFO", "账号数量", accounts.length);
   for (const account of accounts) {
+    const id = account.id;
+    if (id == null || stopFns.has(id)) continue;
     try {
       const stop = await watchAccount(account);
-      stopFns.push(stop);
+      if (typeof stop === "function") {
+        stopFns.set(id, stop);
+        log("INFO", "新增监听账号", { email: account.email });
+      }
     } catch (e) {
       log("ERROR", "启动账号失败", { email: account.email, err: e.message });
     }
   }
+  return accounts.length;
 }
 
-function shutdown(code = 0) {
-  log("INFO", "收到退出信号，关闭 IMAP 监听...");
-  for (const fn of stopFns) { try { fn(); } catch {} }
-  process.exit(code);
+export async function startAll() {
+  if (running) return;
+  running = true;
+  try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
+  log("INFO", "数据目录", DATA_DIR);
+  log("INFO", "账号数量", await reconcile());
+  log("INFO", "已监听 IMAP 账号数", stopFns.size);
+  // 常驻守护：定期补扫新账号。即使当前一个 IMAP 账号都没有（例如只有 ClawEmail），
+  // 也保持进程存活——否则进程会立即以 0 正常退出，被父进程当成崩溃而每 10 秒重启一次。
+  if (!reconcileTimer) reconcileTimer = setInterval(() => { reconcile().catch(() => {}); }, RECONCILE_MS);
 }
-process.on("SIGTERM", () => shutdown(0));
-process.on("SIGINT", () => shutdown(0));
-process.on("SIGBREAK", () => shutdown(0));
 
-log("INFO", "文件已加载");
-startAll();
+export function stopAll() {
+  running = false;
+  if (reconcileTimer) { clearInterval(reconcileTimer); reconcileTimer = null; }
+  for (const fn of stopFns.values()) { try { fn(); } catch { /* ignore */ } }
+  stopFns.clear();
+}
+
+// 直接运行模式：被 runtime/service.mjs import 时不接管进程生命周期。
+const IS_MAIN = (() => {
+  try { return process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url); }
+  catch { return false; }
+})();
+
+if (IS_MAIN) {
+  const shutdown = (code = 0) => {
+    log("INFO", "收到退出信号，关闭 IMAP 监听...");
+    stopAll();
+    process.exit(code);
+  };
+  process.on("SIGTERM", () => shutdown(0));
+  process.on("SIGINT", () => shutdown(0));
+  process.on("SIGBREAK", () => shutdown(0));
+
+  log("INFO", "文件已加载");
+  startAll();
+}

@@ -1,5 +1,294 @@
 # Changelog
 
+## [0.3.3] — 2026-09-11
+
+### 修复：服务不能 spawn —— 拿真实日志才看到的一层
+
+装上 0.3.2 后服务确实起来了（`v2 ready`），但 service.log 写出真因：
+```
+[ERROR] 依赖/监听启动失败 {"error":"spawn EPERM"}
+```
+受管 native 运行时被 Windows Job Object 管着，**服务不能再创建任何子进程**。
+而当时有四条依赖 spawn 的路：
+
+| 位置 | 原来 | 现在 |
+|---|---|---|
+| 依赖安装 | `npm install` | **依赖随包发布**（服务不能装） |
+| 图片代理 | `execFile(_proxy-fetch.cjs)` | 服务内直连（它本身就有原生网络） |
+| 桌面通知 | `execFile(mail-toast.cjs)` | 写队列，AppHost 取走并发（它有 `--allow-child-process`） |
+| ClawEmail 文件夹/移动/标记 | `spawn(mail-cli)` | 改用 `transport.listFolders/moveMessages/markMessages`（进程内 HTTP） |
+
+AgentQQ 后端无等价 SDK，改为明确报错而不是 EPERM。
+
+### 新架构（三段职责）
+```
+服务（收得到邮件、能上网、不能 spawn）→ 写 _pending_notify/
+AppHost（能 spawn、收不到邮件事件）  → 每 5 秒取队列 + 拉起 mail-toast.cjs
+```
+通知延迟最多 5 秒，比原来 60 秒的轮询兜底更快。
+
+### 依赖入包
+`backend/node_modules` 随包发布，并剔掉 `@clawemail/mail-cli`（42.5 MB，已不再用）：
+**56.4 MB → 13.9 MB**，最终 zip **4.93 MB**。
+
+### 其它修复
+- `ctx.runtime.fetch` 的 `timeoutMs` 原来传 120000，**宿主上限是 30000**，
+  整个转发链因此全失败（日志报 `Runtime fetch timeoutMs must be an integer from 1 through 30000`）。
+- 服务把启动过程镜像写 `<dataDir>/service.log`：受管运行时的 stdout/stderr 由宿主
+  捕获、拿不到时，这个文件是唯一能读到的现场。这次就是它把 `spawn EPERM` 交出来的。
+- 启动失败加 30 秒冷却，不再被轮询反复拉起进程。
+
+### 自检
+`scripts/smoke-load.mjs` → **38 项**。新增的核心不变量：
+**服务侧（`backend/*.mjs`）不得出现任何 spawn/execFile** —— 这类问题只在真实装载时暴露，
+静态语法检查查不出来。
+
+## [0.3.1] — 2026-09-10
+
+### 修复：装载与权限记账之间有一个 190ms 的窗口
+
+实测时间线（首次装载 0.3.0）：
+```
+23:58:43.896  plugin "hanako-mail" was started (user)
+23:58:44.097  服务启动失败：requires "app/runtime.execute"
+23:58:44.287  app/runtime.execute  allowed      ← 账本此时才写入
+```
+`apply()` 在装载时只跑一次，而审批写账本比它晚约 190ms。
+对需要**硬权限**的应用（`app/runtime.*`）来说，**首次装载注定失败**。
+
+这不该让用户手动“重新加载”一次：
+
+- `callService` 在服务未就绪时会**惰性重启**（带 `_starting` 并发去重），
+  第一次真调用就自愈；
+- 启动参数存在 `_startArgs`，失败后不丢，重试仍能起来；
+- 子进程与卡片的首次调用就在几秒后（auto_sync / poll），无需用户干预。
+
+### 顺带：迁移改到服务启动流程里
+原来 `index.js` 启完服务再调一次 `/migrate`。但那次调用也会落在同一个权限窗口里，
+白白报一句“迁移失败”。现在服务自己拿着 `LEGACY_DIR` 参数在启动时完成迁移 ——
+**服务启动 = 迁移完成**，两件事绑成一件。
+
+实测输出：
+```
+[INFO] 邮件后端服务启动 {dataDir, legacyDir, port:43181, node:v24.15.0}
+[INFO] 已从 v1 数据目录迁移 {"copied":["accounts.json","cache"]}
+[INFO] HTTP 已监听 127.0.0.1:43181
+HANA_MAIL_SERVICE_READY
+[INFO] WebSocket 已连接: <account>@claw.163.com
+```
+
+### 自检
+`scripts/smoke-load.mjs` → **35 项**：新增惰性重启四项（会重试 / 并发去重 /
+保留启动参数 / 服务启动时自己迁移），全部是从真实事故里长出来的断言。
+
+## [0.3.0] — 2026-09-10
+
+### 架构变更：后端搬进受管 native 运行时
+
+**为何 0.2.x 注定跑不通**：后端一直跑在 AppHost 里（或它 spawn 的子进程里），
+而 AppHost 及其**一切子进程**都在 Node 权限模型内：没有出站网络、读不到安装目录与
+app-data 之外的任何文件。邮件后端离开网络就不存在（IMAP/SMTP/ClawEmail/LLM 端点）。
+两个错过的前提：
+
+1. **子进程继承权限模型，且传播不走环境变量**。实测：父进程用 argv 传 `--permission`、
+   此时 `process.env.NODE_OPTIONS` 为空，子进程仍被拒；剥 NODE_OPTIONS 无效。
+   （0.2.3 那次“剥环境变量就能恢复”的对照实验是错的：我当时把旗标放在 NODE_OPTIONS 里，
+   测的是另一条通道。）
+2. **AppHost 的 env 是宿主白名单**（只有 `PATH`/`HOME`/`TMPDIR`/`LANG`），
+   `USERPROFILE`/`HANA_HOME` 在那不保证存在，`NODE_OPTIONS` 更是根本没有。
+
+**新架构**：
+
+```
+AppHost（权限模型内）             受管 native 服务（独立进程）
+  · 5 个工具                      · ClawEmail WebSocket + IMAP IDLE 监听
+  · 卡片后端路由                  · inbox 命令表（list/read/send/reply/…）
+  · 转发请求 ────────────────▶   · 出站 HTTP（LLM）、图片代理、桌面通知
+                                  · npm install、v1 数据迁移
+```
+
+- 新增 `runtime/service.mjs`：服务本体。自带 HTTP 服务（127.0.0.1:43179），
+  `/health` `/cli` `/migrate` `/http` `/proxy` `/notify` 六个端点；
+  就绪靠 stdout 打 `HANA_MAIL_SERVICE_READY`。
+- 新增 `lib/runtime-host.mjs`：宿主侧句柄（启动 / 等就绪 / 转发 / 停止）。
+- `index.js` 重写：只做工具注册、路由挂载、启服务、等就绪、调迁移。
+  **服务起不来也只降级不抛** —— 工具与卡片仍可用，只报“后端不可用”。
+- `backend/worker-client.mjs`：从“spawn 子进程 + stdio”改为转发到服务。
+  **`runCli` 签名与返回语义保持不变**，所以 `tools/*.js` 与 `http/ui.js` 的 30 多处
+  调用点一个字都没动。
+- `backend/net-child.mjs`：同样改为转发（`/http`），返回值形状不变。
+- `http/ui.js`：图片代理与桌面通知改走服务的 `/proxy` 与 `/notify`。
+- `ws-monitor.mjs` / `imap-idle.mjs`：加 `IS_MAIN` 守卫 —— 被 `service.mjs`
+  import 时不再接管进程生命周期（否则它们各自的 SIGTERM 处理器会把服务一起带走）。
+
+**能力声明**：去掉 `app/process.spawn`（AppHost 不再自己生子进程），
+换成 `app/runtime.execute` + `app/runtime.native` + `app/runtime.network`。
+注意这是一个**真实的权限放大**：native profile 以当前系统用户权限运行、可读该用户
+可读的文件（Windows 上官方标注 enforcement 为 `partial`，不提供完整文件隔离），
+外加外网。安装审批时会单独列出来。
+
+**删除**：`lib/migrate-data.mjs`、`backend/migrate-v1.mjs`、`assets/_http-json.cjs`
+（迁移与 HTTP 已内置到服务）；`lib/env.mjs` 的 `childEnv()`（无效修复，已证伪）。
+`cleanup.cjs` 重写：不再有 pid 文件，只排楂孤儿服务进程。
+
+**自检**：`scripts/smoke-load.mjs` → **31 项**。新增的关键几条：
+服务缺席时 `apply()` 不抛、`callService` 返回 `{ok:false}` 而 `runCli` 仍抛
+（保持旧语义）、backend/lib 里不再有 `childEnv` 残留引用
+（这类引用会变成运行期 `SyntaxError`，`node --check` 查不出来）。
+
+**脱离宿主的真实测试**（服务可以不靠宿主单跑，见 README）：
+`/health` ✓、`/cli folders` 真拉到 6 个文件夹、`/cli list` 真拉到邮件列表、
+`/http` 真出网（拿到 API 的 401）、`/proxy` 的 SSRF 防护生效、
+`/migrate` 目标已存在时不覆盖、未知命令返 400。
+
+## [0.2.3] — 2026-09-10
+
+### 修复：子进程被继承的 Node 权限模型锁死（根因，一个 entry 解释四个症状）
+
+**机制**：v2 的 AppHost 由 `hana-server.exe`（内嵌 **Node 26.8.1**）以
+```
+--permission --allow-fs-read=<安装目录> --allow-fs-read=<app-data> \
+  --allow-fs-write=<app-data> [--allow-child-process]
+```
+启动。Node 会把这串旗标写进 **`NODE_OPTIONS`**，子进程因此**继承权限模型**。
+实测对照（子进程请求 `https://claw.163.com/.../auth/im-token`）：
+
+| 子进程环境 | 结果 |
+|---|---|
+| 继承 `NODE_OPTIONS` | `ERROR ERR_ACCESS_DENIED` |
+| 不带 `NODE_OPTIONS` | `STATUS 401`（网络正常） |
+
+而 APPS.md 的运行时表明写：“外部命令**不自动继承** Node Permission Model"。
+所以这是实现追平文档，不是绕开沙箱 —— 放宽那一步已由用户在能力审批里同意过
+（`app/process.spawn` = “运行外部程序”）。
+
+**同一个根因下的四个症状**：
+1. 数据迁移读不到 v1 的 `plugin-data`（不在白名单里）
+2. `npm install` 连自己的入口都读不到（npm 自身的 JS 入口不在白名单内）
+3. `ws-monitor` 拿不到 ClawEmail 的 IM token（网络被拒）
+4. `worker` 同理（IMAP/SMTP 会一样死）
+
+**修**：新增 `childEnv(extra)`（`lib/env.mjs`），把所有 spawn/execFile 点的
+`NODE_OPTIONS` 里的权限旗标滤掉（保留无关项）。已覆盖：
+`index.js`（常驻子进程、npm）、`lib/migrate-data.mjs`、`backend/{net-child,worker-client,
+ws-monitor,imap-idle,clawemail-backend,agentqq-backend}.mjs`、`http/ui.js`（图片代理、通知）。
+
+### 补上：imap-idle 的“空转退出”修复从未进过仓库
+- 本日早先修的那个 bug（数据目录回退路径少一层 → 账号数 0 → 进程立即以 0 退出
+  → 父进程每 10 秒重启一次）当时只打在了**已安装的 v1 副本**上，仓库里仍是旧代码，
+  v2 迁过来跟着旧版。本次一并补入：`runtimeDataDir()` 统一取目录、`data !== undefined`
+  修正日志假值、`reconcile()` + `stopFns` Map + 60 秒常驻守护。
+
+### 自检
+`scripts/smoke-load.mjs` → **30 项**：新增 `childEnv` 四项（脱旗标 / 保留无关项 /
+透传额外变量 / 只剩旗标时整个删除）与 imap-idle 两项（用 runtimeDataDir / 有常驻守护）。
+
+## [0.2.2] — 2026-09-10
+
+### 修复：依赖安装锁会永久卡死依赖安装（在磁盘上实测到）
+
+- 失败装载的痕迹：`app-data/hanako-mail/.hanako-auto-install.lock`（22:10:32 写入，从未清除）。
+- 链：`spawn("npm", ...)` 被权限模型**同步拒绝** → 既不触发 `close` 也不触发 `error`
+  → 两处 `unlinkSync` 都跑不到 → 文件留着；而 `autoInstallDeps` 开头一看锁存在就直接
+  `return` → **依赖再也装不上**，整个应用功能为空。
+- 修：
+  - 超 10 分钟的锁当过期，自动清掉再试（中途被 kill 也再也不会永久卡住）
+  - `spawn` 包 try/catch，同步失败时就地清锁，并 **error 级** 报出
+    “邮件功能不可用”与缺失依赖（原来是 warn 级、不痛不痒）
+  - 依赖安装失败同样升到 error 级——它就意味着应用不可用，安静失败不可接受
+
+## [0.2.1] — 2026-09-10
+
+### 修复：真实装载后才暴露的三处（静态校验器都查不到）
+
+**1. 路由来源冲突（装载直接 failed）**
+- 顶级 `routes/` 目录在 v2 也是一种路由来源，与 `ctx.routes.register()` **互斥**
+  （`app-host-entry.js:3233 hasAppRouteSourceEntry` / `:4201`）；两者共存时报
+  `defines backend routes twice`，整个应用 failed。
+- 不能改用目录形式：目录形式传入的是 v2 的 ctx（无 `pluginId`），
+  而 `ui.js` 写的是 `path.join(ctx.dataDir, ctx.pluginId)`，会当场炸。
+- → 保留编程式注册，文件 `routes/ui.js` 搬到 **`http/ui.js`**。
+
+**2. 数据迁移在主进程里永远跑不通**
+- AppHost 被以 `--permission --allow-fs-read=<安装目录> --allow-fs-read=<app-data>/<id>` 启动，
+  **不含 `plugin-data`**。主进程 stat/读 v1 数据目录 → `ERR_ACCESS_DENIED`，
+  于是上一版日志只有一句“数据迁移失败”，`app-data` 下什么都没落下来。
+- → 迁移改走子进程 `backend/migrate-v1.mjs`（不继承 AppHost 的 Node 限制）。
+  代价：依赖 `app/process.spawn` 授权；失败时 **error 级** 报出两个绝对路径
+  与手动补救办法（静默失败 = 用户看到“账号没了”）。
+
+**3. v2 logger 会吞掉诊断信息**
+- `ctx.logger.info(format, ...param)` 实测不会把额外参数打进日志行，
+  而 v1 的 `ctx.log.*(msg, data)` 会。于是 `log.warn("启动失败", { error })` 只剩半句话。
+- → `lib/legacy-ctx.mjs` 自行把参数拼进字符串（Error 取 message，其余 JSON）。
+
+### 其它
+- `index.js` 的常驻子进程 spawn 去掉 `shell: true`：`process.execPath` 已是绝对路径，
+  经 shell 多一层 `cmd.exe` 并触发 Node 的 DEP0190 警告。
+- `scripts/smoke-load.mjs` → **24 项**：新增“不存在与编程式注册互斥的 routes/ 源文件”、
+  “二次迁移返回 skipped 而非 copied”、“无 v1 数据时不报错”。
+
+### 教训
+`validate-app` 只保证 manifest 与静态资源自洽；**装载期契约它一律不管**
+（路由来源互斥、能力清单、目录名等于 id、安装位置独占、AppHost 的只读根）。
+两轮 0 error 却两次被真实装载拒收。能覆盖装载的 `--smoke` 需要 Node 26+（本机 24.15）。
+
+## [0.2.0] — 2026-09-10
+
+### 迁移：v1 插件 → v2 App（`manifestVersion: 2`）
+
+仓库根目录现在就是一个 v2 App 包，安装到 `<HANA_HOME>/apps/hanako-mail/`。v1 停在 0.1.18，不再发版。
+
+**入口与装配（新增 `lib/`）**
+- `index.js`：`export default class { onload() }` → `export async function apply(ctx)`；
+  返回 disposer，卸载时按表清理常驻子进程。
+- `lib/env.mjs`：App 身份与路径的单一来源。`lib/legacy-ctx.mjs`：把 v2 ctx 投影成 v1 形状
+  （`pluginDir`/`log`/`pluginId`/`dataDir` 五类成员），`routes/ui.js` 与 `tools/*.js` 因此**零改动**。
+- `lib/register-tools.mjs`：`ctx.tools.register()` 编程式注册；v2 单参 `execute({...args, context})`
+  在此还原成 v1 的 `(input, ctx)` 双参再转发。
+- `lib/register-routes.mjs`：`ctx.routes.register()`（v2 与顶层 `routes/` 目录互斥）。
+- **`routes/ui.js` → `http/ui.js`**：v2 把顶级 `routes/` 目录当成另一条路由来源，
+  与 `ctx.routes.register()` 互斥——两边同时存在，装载直接
+  `defines backend routes twice` 失败（app-host-entry.js:3233 / 4201）。
+  不能改成"只用目录形式"：目录形式传进来的是 **v2 的 ctx**（无 `pluginId`），
+  而 `ui.js` 写的是 `path.join(ctx.dataDir, ctx.pluginId)`，会当场炸。
+  所以选编程式注册、文件改名换地（目录名不叫 routes/ 就不撞规则）。
+  ⚠️ 静态校验器 `validate-app` 不查这条，只有真实装载会拦。
+
+**数据迁移（`lib/migrate-data.mjs`）— 本次最要紧的一处**
+- v2 数据目录是 `app-data/hanako-mail`，v1 是 `plugin-data/hanako-mail/hanako-mail`。
+- 凭据盐 `.cred-salt` 存在数据目录下，目录一换派生密钥就变，`accounts.json` 里加密的
+  `apiKey` / `imapPass` 全部解不开；而读取失败是 `catch { return [] }`，
+  会表现成「账号凭空消失」。故 `apply()` 首件事是搬运 `accounts.json` + `.cred-salt` + `cache/`，
+  目标已存在时跳过，绝不覆盖。
+
+**裸网络绕行**
+- v2 默认 AppHost 在 Node Permission Model 下拒绝裸网络；LLM 端点是用户自配的任意 host，
+  无法用 `network.allowedHosts` 枚举。新增 `backend/net-child.mjs` + `assets/_http-json.cjs`，
+  把 LLM 请求落到子进程发出（与既有图片代理 `assets/_proxy-fetch.cjs` 同一套路数）。
+- `backend/llm.mjs` 的 `fetch` 调用改经上述通道，错误分支随之细化。
+
+**只读安装目录适配**
+- 一切运行时写入从安装目录移到 App 数据目录：`worker-client.mjs` 的 pid 文件、
+  `tools/send.js` 的 `--json` 参数文件、`http/ui.js` 的自动安装锁、`cred-crypto.mjs` 的默认目录。
+  `INSTALL_LOCK` 常量同时改为 `installLockPath()` 懒求值——模块加载早于 `apply()`，
+  那时 `HANAKO_PLUGIN_DATA` 还没写入，直接求值会算出错误路径。
+  依赖安装与 `npm install` 仍在安装目录内进行——它跑在子进程里，不受 AppHost 限制。
+- 修正 `index.js` 里 `killWsTree` 使用 ESM 中不存在的 `require()`（仅 Windows 杀树路径会踩到）。
+
+**界面**
+- `assets/plugin-page-template.html` → `ui/mail.html`；卡片走 `contributes.cards`（route `/mail.html`），
+  删掉原来读模板注入 `PLUGIN_ID` 的 `/mail` 路由。
+- 页面的 API 前缀从 `/api/plugins/<注入的 id>` 改为从 `location.pathname` 推导 appId 的
+  `/api/apps/<appId>/routes` —— 对 App 改名 / 换安装位置免疫；主题改从 `?hana-theme` 取。
+
+**新增**
+- `manifest.json`：v2（`minAppVersion 0.946.2`，capabilities：
+  `app/tools.expose-to-model`、`app/process.spawn`、`app/models.read`、
+  `app/provider.credentials.read`、`app/ui.open-external`、`app/ui.clipboard-write`）。
+- `scripts/smoke-load.mjs`：无需宿主的一次装载自检（15 项，验 ctx 投影 / 数据迁移 / 注册面）。
+- `scripts/make-icon.cjs` + `assets/icon.png`：无依赖手写 PNG 图标（manifest 要求 `icon`）。
+
 ## [0.1.18] — 2026-08-03
 
 ### 修复：实时通知重复（消除双通知）
@@ -52,7 +341,7 @@
   2. 退出码判定：SnoreToast 的 1(Hidden)/2(Dismissed)/3(TimedOut) 均表示通知已展示，此前被 execFile 误判为失败；
   3. AppID 未注册时自动 `-install` 注册（自定义 AUMID 弹 toast 的前提）后重试；
   4. 点击回调（-click）尽力而为，不可用时降级为纯通知——**通知必达**。
-- **通知依赖路径修复**：`mail-toast.cjs` 的 node-notifier 查找、routes/ws-monitor 的 NODE_PATH 从本机 `.workbuddy` 路径改为 `backend/node_modules`（发布后用户 `npm install` 即可弹通知，不再依赖开发机）。
+- **通知依赖路径修复**：`mail-toast.cjs` 的 node-notifier 查找、routes/ws-monitor 的 NODE_PATH 从开发机专用路径改为 `backend/node_modules`（发布后用户依赖随包即有，不再依赖开发机）。
 - imap-backend 导出 `getImapConfig/connectImap/openBox` 供 IDLE 监听器复用。
 
 ## [0.1.5] — 2026-08-02
@@ -95,7 +384,7 @@
 ### 移除（半成品清理）
 - **删除 `backend/identity.mjs`（访客意识引擎）**：自动回复 / 验证码提取 / 隐私脱敏规则全链路无消费者（ws-monitor 定义了 `getAwareness` 但从未调用，inbox 的 `needsConfirmation` 恒为 false），属半成品。连同 ws-monitor 的 `getAwareness`、缓存对象中的 `identity` / `isExternal` / `replyDecision` 字段一并移除。
 - **删除 `_pending_send` 待发送队列**（inbox.mjs 的 `queuePendingSend` / `needsConfirmation`）：该队列无消费者、`needsConfirmation` 恒返回 false（邮件实际直接发出），属死代码。send / reply / forward 现直接执行，不再有"排队却发不出"的假成功路径。
-- **删除 `email-monitor` 本地存档回退**（routes/ui.js 与 tools/sync.js 的 `readEmailMonitorData`）：开发期残留（硬编码 `W:\Games\Hanako\Work\projects\email-monitor\data`），与插件产品逻辑无关，开源分发不应携带。
+- **删除 `email-monitor` 本地存档回退**（routes/ui.js 与 tools/sync.js 的 `readEmailMonitorData`）：开发期残留（硬编码开发机路径），与插件产品逻辑无关，开源分发不应携带。
 
 ### 功能新增
 - **账号编辑**：`POST /accounts` 支持 `action: update`（按 id 更新名称/邮箱/provider；apiKey 仅非空时更新；config 按字段合并，`imapPass` / `smtpPass` 传空字符串可清除）。前端账号卡片新增「改」按钮：回填表单进入编辑模式，密码字段不回显、留空即保留原值；「删」按钮增加二次确认。

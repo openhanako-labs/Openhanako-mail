@@ -1,196 +1,50 @@
 /**
- * worker-client.mjs — 常驻 Worker 的宿主侧客户端
+ * worker-client.mjs — 邮件后端命令的宿主侧客户端（v0.3.0 起：走受管服务）。
  *
- * 职责：
- * - 懒启动 backend/worker.mjs（模块级单例，所有请求共享同一 worker 进程）
- * - 等待 worker 就绪信号后放行请求
- * - 每请求经 stdin 发 JSON，按 id 匹配响应（支持并发）
- * - worker 崩溃自动重启（指数退避）、pending 请求拒绝
- * - 提供 runCli(cmd, args, env) —— 与旧 runInbox 语义一致，调用点无需改动
+ * 历史：v1 与 v2 早期是「AppHost 里 spawn 一个 node 子进程，用 stdin/stdout 传 JSON」。
+ * 那条路在 v2 已经死了 —— AppHost 及其子进程都在 Node 权限模型里，没有出站网络，
+ * 于是 IMAP/SMTP/ClawEmail 全部连不上（见 runtime/service.mjs 顶部注释）。
  *
- * 使用：
- *   import * as worker from "./worker-client.mjs";
- *   const data = await worker.runCli("list", ["user@x.com", "--limit=20"], env);
+ * 现在：所有命令转发给受管的 native 服务，由它执行 inbox 的命令表。
+ * **runCli 的签名与返回语义保持不变**，所以 tools/*.js 与 http/ui.js 的 30 多处
+ * 调用点一个字都不用改。
+ *
+ * 注意：`runCli` 的第三个参数 `env` 仍然按账号注入凭据，但现在是在服务进程里
+ * 对 `process.env` 生效 —— 服务是单进程串行处理请求，语义与原来的 worker 一致
+ * （每请求前 resetAccountCache + 注入 env，连接在构造时固化）。
  */
 
-import { spawn } from "node:child_process";
-import { createInterface } from "node:readline";
-import fs from "node:fs";
-import path from "node:path";
-import os from "node:os";
-import { fileURLToPath } from "node:url";
+import { callService } from "../lib/runtime-host.mjs";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const WORKER_PATH = path.join(__dirname, "worker.mjs");
-const PID_FILE = path.join(__dirname, "data", ".worker.pid");
-
-let proc = null;            // 当前 worker 子进程
-let starting = null;        // 启动中 promise（防并发重复启动）
-let nextId = 1;
-const pending = new Map();  // id -> { resolve, reject, timer }
-let shuttingDown = false;
-let restartDelay = 1000;    // 崩溃重启退避（1s 起步，上限 30s）
-const READY_TIMEOUT = 15000;
-
-function log(...a) {
-  console.log("[worker-client]", ...a);
-}
-
-function writePid(pid) {
-  try { fs.writeFileSync(PID_FILE, String(pid), "utf-8"); } catch {}
-}
-function clearPid() {
-  try { fs.unlinkSync(PID_FILE); } catch {}
-}
-
-function rejectAllPending(message) {
-  for (const [, entry] of pending) {
-    clearTimeout(entry.timer);
-    entry.reject(new Error(message));
+/**
+ * 执行一条 inbox 命令。
+ * @param {string} cmd   命令名（inbox.mjs COMMANDS 的 key：list/read/send/reply/...）
+ * @param {string[]} args CLI 风格参数数组（含 email 与 --key=value）
+ * @param {object} [env] 该账号的凭据环境变量
+ * @returns {Promise<any>} 命令返回的数据；失败抛 Error（与旧的 worker 语义一致）
+ */
+export async function runCli(cmd, args, env) {
+  const res = await callService("/cli", { cmd, args: args || [], env: env || {} });
+  if (!res || res.ok !== true) {
+    throw new Error(res?.error || "mail backend unavailable");
   }
-  pending.clear();
+  return res.data;
 }
 
-function spawnWorker() {
-  const p = spawn(process.execPath, [WORKER_PATH], {
-    cwd: __dirname,
-    windowsHide: true,
-    stdio: ["pipe", "pipe", "pipe"],
-    shell: false,
-    env: { ...process.env },
-  });
-
-  const rl = createInterface({ input: p.stdout, terminal: false });
-  let readyResolve = null;
-  let readyReject = null;
-  const readyPromise = new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
-  const readyTimer = setTimeout(() => { readyReject(new Error("worker 就绪超时")); }, READY_TIMEOUT);
-
-  rl.on("line", (line) => {
-    let msg;
-    try { msg = JSON.parse(line); } catch { return; }
-    // 就绪信号
-    if (msg && msg.type === "ready") {
-      clearTimeout(readyTimer);
-      readyResolve && readyResolve(p);
-      readyResolve = null;
-      return;
-    }
-    // 请求响应
-    if (msg && msg.id && pending.has(msg.id)) {
-      const { resolve, reject, timer } = pending.get(msg.id);
-      pending.delete(msg.id);
-      clearTimeout(timer);
-      if (msg.ok) resolve(msg.data);
-      else reject(new Error(msg.error || "worker error"));
-    }
-  });
-
-  p.stderr.on("data", (d) => {
-    const text = d.toString();
-    // worker 日志直接透传到宿主控制台，前缀保留
-    process.stderr.write(text.endsWith("\n") ? text : text + "\n");
-  });
-
-  p.on("exit", (code, signal) => {
-    clearTimeout(readyTimer);
-    readyReject && readyReject(new Error(`worker 启动即退出: ${code ?? signal}`));
-    readyReject = null;
-    if (proc === p) {
-      proc = null;
-      clearPid();
-      rejectAllPending(`worker 进程退出（code=${code ?? signal}）`);
-      if (!shuttingDown) {
-        log(`worker 退出(code=${code ?? signal})，${restartDelay}ms 后重启`);
-        setTimeout(() => {
-          restartDelay = Math.min(restartDelay * 2, 30000);
-          ensureWorker().catch((e) => log("重启失败", e.message));
-        }, restartDelay);
-      }
-    }
-  });
-
-  p.on("error", (err) => {
-    readyReject && readyReject(err);
-    readyReject = null;
-    log("worker spawn 错误", err.message);
-  });
-
-  return { proc: p, ready: readyPromise };
-}
-
-function ensureWorker() {
-  if (proc && proc.exitCode === null && !proc.killed && proc.stdin && !proc.stdin.destroyed) {
-    return Promise.resolve(proc);
-  }
-  if (starting) return starting;
-  starting = spawnWorker().ready
-    .then((p) => {
-      proc = p;
-      writePid(p.pid);
-      restartDelay = 1000; // 成功连接后重置退避
-      return p;
-    })
-    .finally(() => { starting = null; });
-  return starting;
+/** 健康检查。 */
+export async function ping() {
+  const res = await callService("/health", {});
+  if (res?.ok !== true) throw new Error(res?.error || "mail service not ready");
+  return "pong";
 }
 
 /**
- * 以 CLI 风格调用 worker（与旧 execFile runInbox 语义一致）。
- * @param {string} cmd  命令名（inbox.mjs COMMANDS 的 key：list/read/send/reply/...）
- * @param {string[]} args  CLI 参数数组（含 email 与 --key=value）
- * @param {object} [env]  该账号的凭据环境变量（透传给 worker 注入 process.env）
- * @param {number} [timeoutMs] 请求超时（默认 90s，附件 base64 较大）
- * @returns {Promise<any>} worker 返回的数据
+ * 关闭后端 —— 现在关的是受管服务，由 lib/runtime-host.mjs 的 stopService 负责，
+ * 本函数保留为空操作以维持调用点兼容（index.js 的 disposer 会走到它）。
  */
-export async function runCli(cmd, args, env, timeoutMs = 90000) {
-  const p = await ensureWorker();
-  return new Promise((resolve, reject) => {
-    const id = nextId++;
-    const timer = setTimeout(() => {
-      pending.delete(id);
-      reject(new Error(`worker 请求超时（${timeoutMs}ms）: ${cmd}`));
-    }, timeoutMs);
-    pending.set(id, { resolve, reject, timer });
-    const msg = { id, type: "cli", cmd, args: args || [], env: env || {} };
-    try {
-      p.stdin.write(JSON.stringify(msg) + "\n");
-    } catch (e) {
-      clearTimeout(timer);
-      pending.delete(id);
-      reject(e);
-    }
-  });
-}
-
-/** 健康检查（自测/诊断用）。 */
-export async function ping(timeoutMs = 5000) {
-  const p = await ensureWorker();
-  return new Promise((resolve, reject) => {
-    const id = nextId++;
-    const timer = setTimeout(() => {
-      pending.delete(id);
-      reject(new Error("worker ping 超时"));
-    }, timeoutMs);
-    pending.set(id, { resolve, reject, timer });
-    try { p.stdin.write(JSON.stringify({ id, type: "ping" }) + "\n"); }
-    catch (e) { clearTimeout(timer); pending.delete(id); reject(e); }
-  });
-}
-
-/** 主动关闭 worker（插件卸载时调用）。 */
 export function shutdownWorker() {
-  shuttingDown = true;
-  if (proc && proc.stdin && !proc.stdin.destroyed) {
-    try { proc.stdin.end(); } catch {}
-    // 给 worker 一点时间自行退出，超时强杀
-    setTimeout(() => {
-      try { if (proc && proc.exitCode === null) proc.kill("SIGTERM"); } catch {}
-    }, 300);
-  }
-  proc = null;
-  clearPid();
+  // 受管服务的生命周期归 apply() 的 disposer 管；这里什么都不用做。
 }
 
-// 便于自动化扫描识别：worker 常驻进程会带本文件路径信息
-export const WORKER_PROCESS_MARKER = "worker.mjs";
+// 便于自动化扫描识别（语义保留：本模块代表常驻后端）
+export const WORKER_PROCESS_MARKER = "managed-mail-service";

@@ -35,11 +35,12 @@ export function setCryptoDataDir(dir) {
   if (dir && typeof dir === "string") _dataDir = dir;
 }
 
-/** 解析凭据数据目录：显式设置 > HANAKO_PLUGIN_DATA（ws-monitor/index.js）> 默认。 */
+/** 解析凭据数据目录：显式设置 > HANAKO_PLUGIN_DATA（主进程/子进程）> 默认 App 数据目录。 */
 export function getCryptoDataDir() {
   if (_dataDir) return _dataDir;
   if (process.env.HANAKO_PLUGIN_DATA) return process.env.HANAKO_PLUGIN_DATA;
-  return path.join(os.homedir(), ".hanako", "plugin-data", "hanako-mail");
+  const home = process.env.HANA_HOME || path.join(os.homedir(), ".hanako");
+  return path.join(home, "app-data", "hanako-mail");
 }
 
 function saltFilePath() {
