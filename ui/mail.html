@@ -723,6 +723,16 @@ setTimeout(function(){try{window.parent.postMessage({source:'hana-plugin',type:'
 var APP_ID = decodeURIComponent(location.pathname.split('/')[3] || 'hanako-mail');
 var API_BASE = '/api/apps/' + APP_ID + '/routes';
 var _t = new URL(location.href).searchParams.get('token');
+// v2：app 路由的凭证是宿主签发的 appSurfaceSession（随页面 URL 传下来），不再是 v1 的 ?token=。
+// 服务端两种都认（X-Hana-App-Surface-Session 头 / appSurfaceSession 查询参数）；
+// 这里用查询参数，因为附件与图片代理是走 <img src> / 链接的，加不了请求头。
+var _surface = new URL(location.href).searchParams.get('appSurfaceSession');
+function withCred(u) {
+  var sep = u.indexOf('?') >= 0 ? '&' : '?';
+  if (_surface) return u + sep + 'appSurfaceSession=' + encodeURIComponent(_surface);
+  if (_t) return u + sep + 'token=' + encodeURIComponent(_t);
+  return u;
+}
 
 // 宿主会在 ui/ 路由上带 hana-theme；优先于本地保存的偏好。
 (function () {
@@ -737,8 +747,7 @@ var _t = new URL(location.href).searchParams.get('token');
 // 在 Hana dev 环境和正式版中均可用（已验证带 token 返回 HTTP 200 逐字节一致）。
 var USE_IMAGE_PROXY = true;
 function api(path, options) {
-  var u = API_BASE + path + (_t ? (path.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(_t) : '');
-  return fetch(u, { headers: { 'Content-Type': 'application/json' }, ...options });
+  return fetch(withCred(API_BASE + path), { headers: { 'Content-Type': 'application/json' }, ...options });
 }
 
 function currentTheme() {
@@ -888,9 +897,8 @@ function joinAddrs(a) {
 function attachmentUrl(messageId, partId, download) {
   var p = '/attachments/' + encodeURIComponent(messageId) + '/' + encodeURIComponent(partId) +
     '?accountId=' + encodeURIComponent(state.accountId || '') +
-    (download ? '&download=1' : '') +
-    (_t ? '&token=' + encodeURIComponent(_t) : '');
-  return API_BASE + p;
+    (download ? '&download=1' : '');
+  return withCred(API_BASE + p);
 }
 
 function humanSize(bytes) {
@@ -1007,8 +1015,7 @@ function rewriteImages(html, atts, messageId) {
 
 // 构建图片代理 URL（与 api() 一致，自动带上 token）
 function proxyUrl(externalUrl) {
-  return API_BASE + '/image-proxy?url=' + encodeURIComponent(externalUrl) +
-    (_t ? '&token=' + encodeURIComponent(_t) : '');
+  return withCred(API_BASE + '/image-proxy?url=' + encodeURIComponent(externalUrl));
 }
 
 /* ── 全局状态 ── */

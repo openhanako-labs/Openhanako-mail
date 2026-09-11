@@ -123,6 +123,14 @@ const rtSrc = fs.readFileSync(path.join(ROOT, "lib", "runtime-host.mjs"), "utf-8
 check("惰性重启做了并发去重（_starting）", rtSrc.includes("_starting"));
 check("失败后仍保留启动参数以便重试", rtSrc.includes("_startArgs"));
 
+check("卡片带 appSurfaceSession 凭证（v2 app 路由要求）", (() => {
+  // 踩过：v2 的 app 路由不再认 v1 的 ?token=，服务端只收
+  // X-Hana-App-Surface-Session 头或 appSurfaceSession 查询参数。
+  // 用旧写法会拿到 403，而前端只会静默显示“暂无账号”—— 很难定位。
+  const card = fs.readFileSync(path.join(ROOT, "ui", "mail.html"), "utf-8");
+  return card.includes("appSurfaceSession");
+})());
+
 // 迁移放在服务启动流程里（AppHost 读不到 plugin-data，且 apply 可能早于授权）
 const svcSrc = fs.readFileSync(path.join(ROOT, "runtime", "service.mjs"), "utf-8");
 check("服务启动时自己完成 v1 迁移", /async function main\(\)[\s\S]{0,900}migrate\(LEGACY_DIR, DATA_DIR\)/.test(svcSrc));

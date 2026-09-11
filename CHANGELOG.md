@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.4.3] — 2026-09-11
+
+### 修复：卡片读不到账号（凭证方式还是 v1 的）
+
+现象：账号明明存在（`accounts.json` 里有一条），卡片却显示 **账号数量 0 / 暂无账号**。
+
+根因：**v2 的 app 路由换了鉴权方式**。服务端（`bundle/index.js`）只收这两样：
+
+```js
+req.header("X-Hana-App-Surface-Session") || req.query("appSurfaceSession") || cookie
+```
+
+而卡片的 `api()` 还在发 v1 的 `?token=` → **403** → 前端拿到错误体，
+`d.data` 为 undefined → 静默落成“暂无账号”。（这个静默是最坑的地方：
+没有报错，只是像没数据。）
+
+修：新增 `withCred()`，从卡片页自己的 URL 读 `appSurfaceSession` 并拼到查询串上。
+用**查询参数**而非请求头，因为附件与图片代理是走 `<img src>` / 链接的，加不了头。
+四处都换上了：`api()`、`attachmentUrl()`、`proxyUrl()`。
+
+另：之所以以前没暴露，是因为 v2 迁移后我一直没在真机上打开过卡片细看。
+
+### 自检
+`smoke-load` → **40 项**：新增一条断言“卡片带 appSurfaceSession 凭证” ——
+这类“静默 403”很难从现象反推，值得钉住。
+
 ## [0.4.2] — 2026-09-11
 
 ### 文档：更新时必须先停用（踩过并已定位）
