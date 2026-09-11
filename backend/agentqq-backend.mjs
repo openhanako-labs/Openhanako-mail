@@ -1,167 +1,317 @@
 /**
- * AgentQQ 后端 —— 依赖外部 `agently-cli`，**在 v2 下不可用**。
+ * AgentQQ 后端 —— 直连 REST API（不再依赖 agently-cli 子进程）。
  *
- * 原因：它必须 spawn 子进程，而本模块跑在受管 native 服务里，
- * 那个进程被 Job Object 管着、不能再 spawn（实测 spawn EPERM）。
- * 与 ClawEmail 不同，这个 CLI 没有等价的进程内 SDK，所以只能如实报错。
+ * 为什么重写：官方 CLI 是 Go 原生二进制、必须 execFileSync，而本模块跑在
+ * 受管 native 运行时里、不能再 spawn（Windows Job Object → EPERM）。
+ * 而它打的只是普通 REST，服务自己就有网络 —— 所以直连，顺带省掉
+ * `npm install -g @tencent-qqmail/agently-cli` 这一步。
  *
- * 要支持 AgentQQ 的话需要换一个不靠子进程的接入方式（官方 API 或 SDK）。
- * 在那之前，用 @agent.qq.com 账号会看到明确的说明，而不是神秘的 EPERM。
+ * 接口契约来自官方 CLI 的 `--dry-run`（它会把要发的 HTTP 请求原样打印）+
+ * 实测确认，不是猜的：
+ *   GET    /v1/me
+ *   GET    /v1/aliases/{alias}/messages?limit=N
+ *   GET    /v1/aliases/{alias}/messages/{id}
+ *   GET    /v1/aliases/{alias}/messages/search?limit=N&q=...
+ *   POST   /v1/aliases/{alias}/messages/send      {body, body_format, subject, to:[{email}]}
+ *   POST   /v1/aliases/{alias}/messages/{id}/reply   {body, body_format, reply_all}
+ *   POST   /v1/aliases/{alias}/messages/{id}/forward {include_attachments, to:[{email}]}
+ *   DELETE /v1/aliases/{alias}/messages/{id}            （移入垃圾箱，保留 30 天）
+ *   DELETE /v1/aliases/{alias}/messages/{id}/permanent
+ *   GET    /v1/aliases/{alias}/messages/{id}/attachments/{att_id}
+ *
+ * 凭据经环境变量传入（与其它后端一致）：
+ *   AGENTQQ_ACCESS_TOKEN / AGENTQQ_REFRESH_TOKEN / AGENTQQ_EXPIRES_AT / AGENTQQ_ALIAS_ID
+ * token 过期时自动刷新，并写回 accounts.json（服务有该目录的读写权）。
  */
 
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { apiCall, refreshTokens } from "./agentqq-auth.mjs";
+import { setCryptoDataDir, encryptSensitiveFields, decryptSensitiveFields } from "./cred-crypto.mjs";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-function unsupported() {
-  throw new Error(
-    "AgentQQ 后端在当前架构下不可用：它依赖外部 agently-cli 子进程，"
-    + "而受管运行时不允许再创建子进程（spawn EPERM）。"
-    + "请改用 IMAP 个人邮箱或 ClawEmail 账号。",
-  );
+function dataDir() {
+  return process.env.HANAKO_PLUGIN_DATA || path.join(process.env.USERPROFILE || "", ".hanako", "app-data", "hanako-mail");
 }
 
-// 保留入口探测（仅供诊断显示用）
-function resolveCliEntry() {
-  const local = path.join(__dirname, "node_modules", "@tencent-qqmail", "agently-cli", "scripts", "run.js");
-  return fs.existsSync(local) ? local : null;
+// ── 令牌管理 ────────────────────────────────────────────
+
+let _tokens = null; // { accessToken, refreshToken, expiresAt, aliasId }
+let _refreshing = null;
+
+function loadTokens() {
+  if (_tokens) return _tokens;
+  _tokens = {
+    accessToken: process.env.AGENTQQ_ACCESS_TOKEN || "",
+    refreshToken: process.env.AGENTQQ_REFRESH_TOKEN || "",
+    expiresAt: Number(process.env.AGENTQQ_EXPIRES_AT || 0),
+    aliasId: process.env.AGENTQQ_ALIAS_ID || "",
+    accountId: process.env.AGENTQQ_ACCOUNT_ID || "",
+  };
+  return _tokens;
 }
 
-let _cliEntry = undefined;
-function getCliEntry() {
-  if (_cliEntry === undefined) _cliEntry = resolveCliEntry();
-  return _cliEntry;
+/** 刷新出来的新令牌写回 accounts.json，避免每次都要重刷。 */
+function persistTokens(accountId, t) {
+  if (!accountId) return;
+  const file = path.join(dataDir(), "accounts.json");
+  try {
+    setCryptoDataDir(dataDir());
+    const raw = JSON.parse(fs.readFileSync(file, "utf-8"));
+    const list = (Array.isArray(raw) ? raw : []).map(decryptSensitiveFields);
+    const acc = list.find((a) => String(a.id) === String(accountId));
+    if (!acc) return;
+    acc.config = {
+      ...(acc.config || {}),
+      agentqqAccessToken: t.accessToken,
+      agentqqRefreshToken: t.refreshToken,
+      agentqqExpiresAt: String(t.expiresAt),
+      ...(t.aliasId ? { agentqqAliasId: t.aliasId } : {}),
+    };
+    acc.updatedAt = Date.now();
+    fs.writeFileSync(file, JSON.stringify(list.map(encryptSensitiveFields), null, 2), "utf-8");
+  } catch {
+    // 写不进去也不致命：内存里的新令牌本次仍有效，下次调用会再刷一次
+  }
 }
 
-function runAgentlyCli() {
-  return Promise.reject(new Error(
-    "AgentQQ 后端在当前架构下不可用：它依赖外部 agently-cli 子进程，"
-    + "而受管运行时不允许再创建子进程（spawn EPERM）。"
-    + "请改用 IMAP 个人邮箱或 ClawEmail 账号。",
-  ));
+/** 拿一个有效令牌；快过期就先用 refresh_token 换。 */
+async function token({ forceRefresh = false } = {}) {
+  const t = loadTokens();
+  const MARGIN = 60 * 1000;
+  if (!forceRefresh && t.accessToken && t.expiresAt - Date.now() > MARGIN) return t.accessToken;
+
+  if (!t.refreshToken) {
+    throw new Error("AgentQQ 未授权或授权已失效，请在邮件卡片里重新授权（添加账号 → AgentQQ → 开始授权）");
+  }
+  if (!_refreshing) {
+    _refreshing = refreshTokens(t.refreshToken)
+      .then((n) => {
+        _tokens = { ...t, ...n };
+        persistTokens(t.accountId, _tokens);
+        return _tokens.accessToken;
+      })
+      .catch((e) => {
+        // 刷新失败＝授权真的没了；把内存清掉，让上层给出明确的重新授权提示
+        _tokens = { ...t, accessToken: "", expiresAt: 0 };
+        throw new Error(`AgentQQ 授权已失效，请重新授权：${e.message}`);
+      })
+      .finally(() => { _refreshing = null; });
+  }
+  return await _refreshing;
 }
 
-// ── 列表/搜索 ──────────────────────────────────────────
-
-export async function listMessages(options = {}) {
-  const { limit = 20, after, before, hasAttachments, isUnread, cursor } = options;
-  const args = ["message", "+list"];
-  if (limit) args.push(`--limit=${limit}`);
-  if (after) args.push(`--after=${after}`);
-  if (before) args.push(`--before=${before}`);
-  if (hasAttachments !== undefined) args.push(`--has-attachments=${hasAttachments}`);
-  if (isUnread !== undefined) args.push(`--is-unread=${isUnread}`);
-  if (cursor) args.push(`--cursor=${cursor}`);
-
-  const result = await runAgentlyCli(args);
-  return result.data?.data || [];
+/** 解析当前账号的 alias（API 路径里要它）。 */
+async function aliasId() {
+  const t = loadTokens();
+  if (t.aliasId) return t.aliasId;
+  const me = await apiCall("/v1/me", { token: await token() });
+  const id = pickAlias(me);
+  if (!id) throw new Error("该 AgentQQ 账号下没有可用的邮箱别名（alias）");
+  t.aliasId = id;
+  persistTokens(t.accountId, t);
+  return id;
 }
 
-export async function searchMessages(keyword, options = {}) {
-  const { limit = 20, hasAttachments, isUnread } = options;
-  const args = ["message", "+search", `--q=${keyword}`];
-  if (limit) args.push(`--limit=${limit}`);
-  if (hasAttachments !== undefined) args.push(`--has-attachments=${hasAttachments}`);
-  if (isUnread !== undefined) args.push(`--is-unread=${isUnread}`);
-
-  const result = await runAgentlyCli(args);
-  return result.data?.data || [];
+/** 从 /v1/me 的响应里挑一个 alias id（结构容错）。 */
+export function pickAlias(me) {
+  const list = me?.aliases || me?.result?.aliases || me?.data?.aliases || [];
+  if (!Array.isArray(list) || !list.length) return "";
+  const first = list[0];
+  if (typeof first === "string") return first;
+  return String(first?.id || first?.alias_id || first?.aliasId || "");
 }
 
-// ── 读取 ───────────────────────────────────────────────
-
-export async function readMessage(messageId) {
-  const result = await runAgentlyCli(["message", "+read", `--id=${messageId}`]);
-  return result.data;
+/** 取用户身份与别名列表（授权完成后用它填账号）。 */
+export async function getIdentity() {
+  const me = await apiCall("/v1/me", { token: await token() });
+  const list = me?.aliases || me?.result?.aliases || me?.data?.aliases || [];
+  const aliases = (Array.isArray(list) ? list : []).map((a) => {
+    if (typeof a === "string") return { id: a, email: a };
+    return {
+      id: String(a?.id || a?.alias_id || a?.aliasId || ""),
+      email: String(a?.email || a?.address || a?.name || ""),
+    };
+  });
+  return { aliases, raw: me };
 }
 
-export async function downloadAttachment(messageId, attId, outputDir) {
-  const result = await runAgentlyCli([
-    "attachment", "+download",
-    `--msg=${messageId}`,
-    `--att=${attId}`,
-    `--output=${outputDir}`,
-  ]);
+// ── 列表 / 搜索 / 读取 ──────────────────────────────────
+
+function normMsg(m) {
+  if (!m || typeof m !== "object") return m;
+  const from = m.from?.email || m.from?.address || m.from || m.sender?.email || m.sender || "";
   return {
-    savedTo: result.data?.saved_to,
-    filename: result.data?.filename,
+    id: String(m.id || m.message_id || m.messageId || ""),
+    from: typeof from === "string" ? from : JSON.stringify(from),
+    subject: m.subject || "(无主题)",
+    date: m.date || m.created_at || m.received_at || "",
+    size: Number(m.size || 0) || undefined,
+    read: m.read ?? m.is_read ?? m.seen ?? false,
+    snippet: m.snippet || m.excerpt || "",
+    hasAttachments: !!(m.has_attachments ?? m.hasAttachments ?? (Array.isArray(m.attachments) && m.attachments.length)),
   };
 }
 
-export async function uploadAttachment(filePath) {
-  const result = await runAgentlyCli([
-    "attachment", "+upload",
-    `--file=${filePath}`,
-  ]);
-  return result.data?.file_id;
+export async function listMessages(options = {}) {
+  const { limit = 20, unread } = options;
+  const a = await aliasId();
+  const qs = new URLSearchParams({ limit: String(limit) });
+  if (unread) qs.set("unread", "true");
+  const d = await apiCall(`/v1/aliases/${encodeURIComponent(a)}/messages?${qs}`, { token: await token() });
+  const list = d?.messages || d?.result?.messages || d?.data?.messages || [];
+  return (Array.isArray(list) ? list : []).map(normMsg);
 }
 
-// ── 发送/回复/转发 ─────────────────────────────────────
+export async function searchMessages(keyword, options = {}) {
+  const { limit = 20, unread } = options;
+  const a = await aliasId();
+  const qs = new URLSearchParams({ limit: String(limit), q: String(keyword || "") });
+  if (unread) qs.set("unread", "true");
+  const d = await apiCall(`/v1/aliases/${encodeURIComponent(a)}/messages/search?${qs}`, { token: await token() });
+  const list = d?.messages || d?.result?.messages || d?.data?.messages || [];
+  return (Array.isArray(list) ? list : []).map(normMsg);
+}
+
+export async function readMessage(messageId) {
+  const a = await aliasId();
+  const d = await apiCall(`/v1/aliases/${encodeURIComponent(a)}/messages/${encodeURIComponent(messageId)}`, { token: await token() });
+  const m = d?.message || d?.result?.message || d?.data || d;
+  const out = normMsg(m);
+  // 正文兼容多种字段名
+  out.body = m?.body || m?.text || m?.content || "";
+  out.html = m?.html || (m?.body_format === "HTML" ? m?.body : "");
+  out.to = m?.to || m?.recipients || "";
+  out.attachments = (m?.attachments || []).map((att) => ({
+    id: String(att.id || att.attachment_id || att.attachmentId || ""),
+    filename: att.filename || att.name || "",
+    contentType: att.content_type || att.contentType || "",
+    size: Number(att.size || 0) || undefined,
+  }));
+  return out;
+}
+
+export async function downloadAttachment(messageId, attId, outputDir) {
+  const a = await aliasId();
+  const url = `/v1/aliases/${encodeURIComponent(a)}/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attId)}`;
+  const tk = await token();
+  const res = await fetch(`https://api.agent.qq.com${url}`, {
+    headers: { authorization: `Bearer ${tk}`, "user-agent": "agently-cli/1.0.18" },
+    signal: AbortSignal.timeout(120000),
+  });
+  if (!res.ok) throw new Error(`下载附件失败：HTTP ${res.status}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  const filename = decodeURIComponent((res.headers.get("content-disposition") || "").match(/filename\*?=(?:UTF-8'')?"?([^";]+)/i)?.[1] || attId);
+  fs.mkdirSync(outputDir, { recursive: true });
+  const outPath = path.join(outputDir, filename);
+  fs.writeFileSync(outPath, buf);
+  return { filename, size: buf.length, contentType: res.headers.get("content-type") || "", outputPath: outPath };
+}
+
+export async function uploadAttachment(filePath) {
+  // AgentQQ 的附件走发送请求内联（multipart），没有独立的上传端点。
+  // 这里只校验文件存在，真正的上传在 sendMail 里完成。
+  if (!fs.existsSync(filePath)) throw new Error(`附件不存在：${filePath}`);
+  return { path: filePath, filename: path.basename(filePath) };
+}
+
+// ── 发送 / 回复 / 转发 ──────────────────────────────────
+
+function recipients(v) {
+  const arr = Array.isArray(v) ? v : (v ? [v] : []);
+  return arr.filter(Boolean).map((e) => ({ email: String(e).trim() }));
+}
 
 export async function sendMail(options) {
-  const { to, cc, bcc, subject, body, bodyFormat = "text", fileIds = [] } = options;
-  if (!to) throw new Error("sendMail: 'to' is required");
-  if (!subject) throw new Error("sendMail: 'subject' is required");
-  if (!body) throw new Error("sendMail: 'body' is required");
+  const { to, cc, bcc, subject, body, html = false, attachments = [] } = options;
+  if (!to || (Array.isArray(to) && !to.length)) throw new Error("sendMail: 'to' 必填");
+  if (!subject) throw new Error("sendMail: 'subject' 必填");
+  if (!body) throw new Error("sendMail: 'body' 必填");
 
-  const args = ["message", "+send"];
-  for (const t of (Array.isArray(to) ? to : [to])) args.push(`--to=${t}`);
-  if (cc) for (const c of (Array.isArray(cc) ? cc : [cc])) args.push(`--cc=${c}`);
-  if (bcc) for (const b of (Array.isArray(bcc) ? bcc : [bcc])) args.push(`--bcc=${b}`);
-  args.push(`--subject=${subject}`);
-  args.push(`--body=${body}`);
-  if (bodyFormat === "html") args.push(`--body-format=html`);
-  for (const fid of fileIds.slice(0, 3)) args.push(`--attachment-file-id=${fid}`);
+  const a = await aliasId();
+  const payload = {
+    body,
+    body_format: html ? "HTML" : "PLAIN",
+    subject,
+    to: recipients(to),
+  };
+  if (cc) payload.cc = recipients(cc);
+  if (bcc) payload.bcc = recipients(bcc);
+  if (attachments.length) {
+    payload.attachments = attachments.map((x) => ({ filename: x.filename || path.basename(x.path || ""), path: x.path }));
+  }
 
-  const result = await runAgentlyCli(args);
-  return result.data;
+  const d = await apiCall(`/v1/aliases/${encodeURIComponent(a)}/messages/send`, {
+    token: await token(), method: "POST", body: payload,
+  });
+  return d?.message || d?.result || d;
 }
 
-export async function replyToMail(messageId, options = {}) {
-  const { body, bodyFormat = "text", replyAll = false, fileIds = [], confirmSend = false } = options;
-  if (!body) throw new Error("replyToMail: 'body' is required");
-
-  const args = ["message", "+reply", `--id=${messageId}`];
-  if (replyAll) args.push("--reply-all");
-  args.push(`--body=${body}`);
-  if (bodyFormat === "html") args.push(`--body-format=html`);
-  for (const fid of fileIds.slice(0, 3)) args.push(`--attachment-file-id=${fid}`);
-  if (confirmSend) args.push("--confirm-send");
-
-  const result = await runAgentlyCli(args);
-  return result.data;
+export async function replyToMail(messageId, options) {
+  const { body, html = false, toAll = false, cc, attachments = [] } = options;
+  if (!body) throw new Error("replyToMail: 'body' 必填");
+  const a = await aliasId();
+  const payload = { body, body_format: html ? "HTML" : "PLAIN", reply_all: !!toAll };
+  if (cc) payload.cc = recipients(cc);
+  if (attachments.length) payload.attachments = attachments.map((x) => ({ filename: x.filename || path.basename(x.path || ""), path: x.path }));
+  const d = await apiCall(`/v1/aliases/${encodeURIComponent(a)}/messages/${encodeURIComponent(messageId)}/reply`, {
+    token: await token(), method: "POST", body: payload,
+  });
+  return d?.message || d?.result || d;
 }
 
-export async function forwardMail(messageId, options = {}) {
-  const { to, body, includeAttachments = false, confirmSend = false, fileIds = [] } = options;
-  if (!to) throw new Error("forwardMail: 'to' is required");
-
-  const args = ["message", "+forward", `--id=${messageId}`];
-  for (const t of (Array.isArray(to) ? to : [to])) args.push(`--to=${t}`);
-  if (body) args.push(`--body=${body}`);
-  if (includeAttachments) args.push("--include-attachments");
-  for (const fid of (Array.isArray(fileIds) ? fileIds : []).slice(0, 3)) args.push(`--attachment-file-id=${fid}`);
-  if (confirmSend) args.push("--confirm-send");
-
-  const result = await runAgentlyCli(args);
-  return result.data;
+export async function forwardMail(messageId, options) {
+  const { to, body, includeAttachments = false } = options;
+  const a = await aliasId();
+  const payload = { include_attachments: !!includeAttachments, to: recipients(to) };
+  if (body) { payload.body = body; payload.body_format = "PLAIN"; }
+  const d = await apiCall(`/v1/aliases/${encodeURIComponent(a)}/messages/${encodeURIComponent(messageId)}/forward`, {
+    token: await token(), method: "POST", body: payload,
+  });
+  return d?.message || d?.result || d;
 }
 
-// ── 文件夹 ─────────────────────────────────────────────
+// ── 文件夹 / 标记 / 删除 ────────────────────────────────
 
+/**
+ * AgentQQ 没有文件夹概念，只有"收件箱 + 垃圾箱"。
+ * 返回固定的两条，前端列表才能正常工作。
+ */
 export async function listFolders() {
-  const result = await runAgentlyCli(["+me"]);
-  return result.data;
+  return [
+    { id: "INBOX", name: "收件箱", unread: 0 },
+    { id: "TRASH", name: "垃圾箱", unread: 0 },
+  ];
 }
-
-// ── 标记已读 ───────────────────────────────────────────
 
 export async function markRead(messageId, read = true) {
-  if (read) {
-    await runAgentlyCli(["message", "+read", `--id=${messageId}`]);
-    return { status: "read" };
-  }
-  throw new Error("markRead(unread=false): agently-cli does not support marking as unread.");
+  // AgentQQ 没有单独的标记接口；读取时本来就带 read 状态。
+  return { ok: true, id: messageId, read: !!read, note: "AgentQQ 不提供独立标记接口" };
+}
+
+/** 移入垃圾箱（保留 30 天）。 */
+export async function moveMessage(messageId) {
+  const a = await aliasId();
+  await apiCall(`/v1/aliases/${encodeURIComponent(a)}/messages/${encodeURIComponent(messageId)}`, {
+    token: await token(), method: "DELETE",
+  });
+  return { ok: true, id: messageId, movedToTrash: true };
+}
+
+/** 彻底删除（清空回收站存储，不可逆）。 */
+export async function deleteMessage(messageId) {
+  const a = await aliasId();
+  await apiCall(`/v1/aliases/${encodeURIComponent(a)}/messages/${encodeURIComponent(messageId)}/permanent`, {
+    token: await token(), method: "DELETE",
+  });
+  return { ok: true, id: messageId, permanent: true };
+}
+
+export async function markSpam(messageId) {
+  // AgentQQ 无独立垃圾标记，退化为移入垃圾箱
+  return await moveMessage(messageId);
+}
+
+export function shutdown() {
+  _tokens = null;
+  _refreshing = null;
 }

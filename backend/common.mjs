@@ -95,6 +95,13 @@ export function inboxEnvFor(account) {
     if (c.smtpPort) env.SMTP_PORT = String(c.smtpPort);
     if (c.smtpUser) env.SMTP_USER = c.smtpUser;
     if (c.smtpPass) env.SMTP_PASS = c.smtpPass;
+    // AgentQQ：OAuth 令牌经环境变量透传（与其它后端一致）
+    if (c.agentqqAccessToken) env.AGENTQQ_ACCESS_TOKEN = c.agentqqAccessToken;
+    if (c.agentqqRefreshToken) env.AGENTQQ_REFRESH_TOKEN = c.agentqqRefreshToken;
+    if (c.agentqqExpiresAt) env.AGENTQQ_EXPIRES_AT = String(c.agentqqExpiresAt);
+    if (c.agentqqAliasId) env.AGENTQQ_ALIAS_ID = c.agentqqAliasId;
   }
+  // 刷新出的新令牌要能写回该账号，所以后端得知道自己在给谁干活
+  if (account && account.id != null) env.AGENTQQ_ACCOUNT_ID = String(account.id);
   return env;
 }

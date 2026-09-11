@@ -1099,8 +1099,7 @@ export default function (app, ctx) {
   app.get("/image-proxy", getImageProxy);
 
   // ── 依赖安装状态查询（前端轮询用）──
-  app.get("/deps-status", (c) => {
-    const installing = fs.existsSync(installLockPath());
+  app.get("/deps-status", (c) => {    const installing = fs.existsSync(installLockPath());
     const missing = [];
     // 检查各后端核心依赖
     const checks = [
@@ -1127,6 +1126,20 @@ export default function (app, ctx) {
     });
     return c.json({ ok: res?.ok !== false, method: "native", error: res?.ok === false ? res.error : undefined });
   };
+
+  // ── AgentQQ 设备码授权（转发给受管服务：设备流程要发 HTTPS，AppHost 无网）──
+  // 令牌不经这条路径：服务拿到后直接写进加密的 accounts.json。
+  app.post("/agentqq/login/start", async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const r = await callService("/agentqq/login/start", { name: body.name || "" });
+    return c.json(r?.ok ? { ok: true, ...r.data } : { ok: false, error: r?.error || "启动授权失败" });
+  });
+
+  app.post("/agentqq/login/status", async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const r = await callService("/agentqq/login/status", { sessionId: body.sessionId || "" });
+    return c.json(r?.ok ? { ok: true, ...r.data } : { ok: false, error: r?.error || "查询授权状态失败" });
+  });
 
   const getClicksLatest = (c) => {
     const clickFile = path.join(os.tmpdir(), "hanako-mail-click.json");

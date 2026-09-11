@@ -32,6 +32,8 @@ import https from "node:https";
 import net from "node:net";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomBytes } from "node:crypto";
+import { startDeviceFlow, waitForAuthorization } from "../backend/agentqq-auth.mjs";
+import { decryptSensitiveFields, encryptSensitiveFields } from "../backend/cred-crypto.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const INSTALL_DIR = path.resolve(__dirname, "..");
@@ -274,6 +276,113 @@ function drainNotifications(limit = 10) {
   return { ok: true, items: out };
 }
 
+// ── AgentQQ 设备码授权 ──────────────────────────────────
+//
+// 为什么放在服务里：设备流程要发 HTTPS 请求，而 AppHost 没有网。
+// 流程分两步（浏览器那段在用户手上，可能好几分钟）：
+//   1) /agentqq/login/start  → 返回设备码 + 授权链接，后台开一个长轮询
+//   2) /agentqq/login/status → 卡片轮询状态；成功后服务自己把账号写进 accounts.json
+// 令牌不经浏览器、不经卡片，只存在服务内存与加密的 accounts.json 里。
+
+const authSessions = new Map(); // sessionId -> { state, email, error, browserUrl, inputCode, expiresAt }
+const AUTH_SESSION_TTL_MS = 15 * 60 * 1000;
+
+function sweepAuthSessions() {
+  const now = Date.now();
+  for (const [id, s] of authSessions) {
+    if (s.state !== "pending" && now - (s.updatedAt || 0) > AUTH_SESSION_TTL_MS) authSessions.delete(id);
+    else if (s.state === "pending" && now > s.deadlineAt) {
+      s.state = "expired"; s.error = "授权超时，请重新发起"; s.updatedAt = now;
+    }
+  }
+}
+
+/** 把授权得到的账号写进 accounts.json（服务与 AppHost 共用同一目录）。 */
+function writeAgentqqAccount({ name, email, account }) {
+  const file = path.join(DATA_DIR, "accounts.json");
+  let list = [];
+  try { list = JSON.parse(fs.readFileSync(file, "utf-8")); } catch { list = []; }
+  if (!Array.isArray(list)) list = [];
+  list = list.map(decryptSensitiveFields);
+
+  // 同一个邮箱重复授权 = 更新，不新增
+  const idx = list.findIndex((a) => String(a.email || "").toLowerCase() === String(email).toLowerCase());
+  const rec = {
+    id: idx >= 0 ? list[idx].id : String(Date.now()),
+    name: name || (idx >= 0 ? list[idx].name : "AgentQQ"),
+    email,
+    provider: "agentqq",
+    createdAt: idx >= 0 ? list[idx].createdAt : Date.now(),
+    updatedAt: Date.now(),
+    config: {
+      ...(idx >= 0 ? list[idx].config || {} : {}),
+      agentqqAccessToken: account.accessToken,
+      agentqqRefreshToken: account.refreshToken,
+      agentqqExpiresAt: String(account.expiresAt),
+      agentqqAliasId: account.aliasId || "",
+    },
+  };
+  if (idx >= 0) list[idx] = rec; else list.push(rec);
+  fs.writeFileSync(file, JSON.stringify(list.map(encryptSensitiveFields), null, 2), "utf-8");
+  return rec;
+}
+
+async function startAgentqqLogin({ name }) {
+  const dev = await startDeviceFlow();
+  const sessionId = randomBytes(8).toString("hex");
+  const session = {
+    state: "pending",
+    browserUrl: dev.browserUrl,
+    inputCode: dev.inputCode,
+    expiresIn: dev.expiresIn,
+    deadlineAt: Date.now() + Math.min(dev.expiresIn * 1000, 10 * 60 * 1000),
+    updatedAt: Date.now(),
+  };
+  authSessions.set(sessionId, session);
+
+  // 后台等授权：拿不到就等，拿到就建账号。不阻塞这个请求。
+  (async () => {
+    try {
+      const tokens = await waitForAuthorization(dev.pollUrl, { deadlineMs: session.deadlineAt });
+      const auth = await import("./agentqq-backend.mjs").then((m) => m);
+      // 用刚拿到的令牌写进进程环境，才能调 /v1/me
+      process.env.AGENTQQ_ACCESS_TOKEN = tokens.accessToken;
+      process.env.AGENTQQ_REFRESH_TOKEN = tokens.refreshToken;
+      process.env.AGENTQQ_EXPIRES_AT = String(tokens.expiresAt);
+      process.env.AGENTQQ_ALIAS_ID = "";
+      auth.shutdown();
+
+      const ident = await auth.getIdentity();
+      const first = ident.aliases.find((a) => a.id) || null;
+      const email = (first && first.email) || "agentqq@agent.qq.com";
+      const rec = writeAgentqqAccount({
+        name,
+        email,
+        account: { ...tokens, aliasId: first ? first.id : "" },
+      });
+
+      session.state = "authorized";
+      session.email = email;
+      session.accountId = rec.id;
+      session.aliases = ident.aliases;
+      session.updatedAt = Date.now();
+      log("INFO", "AgentQQ 授权成功，账号已创建", { email, accountId: rec.id });
+    } catch (e) {
+      session.state = "failed";
+      session.error = e?.message || String(e);
+      session.updatedAt = Date.now();
+      log("WARN", "AgentQQ 授权失败", { error: session.error });
+    }
+  })();
+
+  return {
+    sessionId,
+    inputCode: dev.inputCode,
+    browserUrl: dev.browserUrl,
+    expiresIn: dev.expiresIn,
+  };
+}
+
 // ── 延迟到此处才 import 后端：它们都在模块作用域读 HANAKO_PLUGIN_DATA ──
 //
 // 必须过 pathToFileURL：Windows 上从非 C: 盘（如 W:）用绝对路径 import() 会撞
@@ -364,6 +473,28 @@ async function handle(req, res) {
     if (route === "/proxy") return send(res, 200, await proxyFetch(body.url));
     if (route === "/notify") return send(res, 200, queueNotification(body));
     if (route === "/pending-notify") return send(res, 200, drainNotifications(body.limit));
+
+    if (route === "/agentqq/login/start") {
+      sweepAuthSessions();
+      return send(res, 200, { ok: true, data: await startAgentqqLogin({ name: body.name }) });
+    }
+    if (route === "/agentqq/login/status") {
+      sweepAuthSessions();
+      const s = authSessions.get(body.sessionId);
+      if (!s) return send(res, 200, { ok: true, data: { state: "unknown" } });
+      return send(res, 200, {
+        ok: true,
+        data: {
+          state: s.state,
+          email: s.email,
+          accountId: s.accountId,
+          aliases: s.aliases,
+          error: s.error,
+          inputCode: s.inputCode,
+          browserUrl: s.browserUrl,
+        },
+      });
+    }
   } catch (e) {
     return send(res, 500, { ok: false, error: e.message });
   }

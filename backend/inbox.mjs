@@ -80,6 +80,13 @@ function resolveAccountConfig(email) {
     }
     return { backend, email };
   }
+  // AgentQQ 用 OAuth（access/refresh token），不依赖 apiKey
+  if (backend === "agentqq") {
+    if (!process.env.AGENTQQ_ACCESS_TOKEN && !process.env.AGENTQQ_REFRESH_TOKEN) {
+      throw new Error("AgentQQ 未授权 — 请在邮件卡片里添加 AgentQQ 账号并完成授权（设备码流程）。");
+    }
+    return { backend, email };
+  }
   const apiKey = process.env.CLAWEMAIL_API_KEY;
   if (!apiKey) {
     throw new Error("CLAWEMAIL_API_KEY not set — 请在 account 中填写 apiKey（accounts.json），或在 backend/.env 中配置兜底。");

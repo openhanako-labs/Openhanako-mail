@@ -1,5 +1,77 @@
 # Changelog
 
+## [0.4.0] — 2026-09-11
+
+### 新增：AgentQQ 后端（腾讯企业邮 / @agent.qq.com）
+
+**原来的问题**：这个后端依赖外部 `agently-cli`。它是个 Go 原生二进制，
+`run.js` 只是 execFileSync 它 —— 而本应用的后端跑在受管 native 运行时里、
+**不能再 spawn**（Job Object → EPERM）。所以 0.3.x 里它被标成不可用。
+
+**找到的解法**：那个 CLI 打的只是普通 REST，而服务自己就有网络 —— 直连即可。
+连 `npm install -g @tencent-qqmail/agently-cli` 都不需要了。
+
+协议是从官方 CLI 的 `--dry-run`（它会把要发的 HTTP 请求原样打印）与实测反推的：
+
+```
+client_id = cli_002e8cd1b1fc89ce      UA 必须是 agently-cli/<版本>（客户端身份靠它）
+设备码  POST auth/oauth/device?func=1  body 必须为空
+        → { poll_url, browser_url, input_code, expires_in }
+轮询    POST {poll_url}                长轮询；未授权会一直挂着（超时＝还没授权）
+刷新    POST auth/oauth/token         form: grant_type=refresh_token&refresh_token=…&client_id=…
+API     https://api.agent.qq.com/v1/…  Bearer <access_token>
+```
+
+接口：`GET /v1/me`、`GET|POST /v1/aliases/{alias}/messages…`（列表/搜索/读取/发送/回复/转发）、
+`DELETE …/{id}`（移入垃圾箱，保留 30 天）、`DELETE …/{id}/permanent`、
+`GET …/{id}/attachments/{att_id}`。
+
+**实现**：
+- `backend/agentqq-auth.mjs`：设备码 / 长轮询 / 刷新 / API 调用（纯协议，无状态）
+- `backend/agentqq-backend.mjs`：重写为 REST，删掉 agently-cli 依赖；
+token 快过期时自动刷新并把新 token 写回 `accounts.json`
+- 凭据加密：`cred-crypto` 的敏感字段表新增 `agentqqAccessToken` / `agentqqRefreshToken`
+- 服务端点 `/agentqq/login/start` `/agentqq/login/status`；
+授权成功后**服务自己把账号写进 accounts.json**（令牌不经浏览器、不经卡片）
+- 卡片：选 AgentQQ 时不再要 API Key，改为设备码面板（授权码 + 链接 + 自动轮询）
+
+**顺带修掉一个 v1 就有的残缺**：原来的 `sendMail` / `replyToMail` / `forwardMail`
+只调一次 CLI，而那个 CLI 的发送是**两步确认**（先返回 confirmation_token，
+再带 token 重发）—— 所以这三个功能在 v1 里本来就没真正发出去过。
+改成 REST 直接 POST 后，这个问题自然消失。
+
+### 自检
+`smoke-bridge` → **10 项**：新增 AgentQQ 设备码申请（真网络）、未授权时状态、
+未知会话不抛。`smoke-load` 38 项不变。
+
+> 注：AgentQQ 的完整链路（授权 → 列表 → 读信 → 发送）需要一次人工授权才能
+> 端到端验证；设备码申请到轮询这一段已在本地真实跑通。
+
+## [0.3.5] — 2026-09-11
+
+### 清理
+- 删除已无引用的 `backend/worker.mjs`、`assets/_proxy-fetch.cjs`、
+  `helper/MailToastHelper/`（.NET 通知助手）及其全部构建产物
+- CHANGELOG / `mail-toast.cjs` 中的开发机路径泛化；
+  `smoke-bridge` 的测试账号改为占位邮箱
+- README 的架构图 / 权限表 / 通知链路改成 v2 现状
+
+## [0.3.4] — 2026-09-11
+
+### 修复：桥取响应取错了一层（Response.body 是流）
+
+服务已能完整启动（`依赖就绪 / inbox 已加载 / HTTP 已监听 / ws-monitor 已启动 / imap-idle 已启动`），
+但 AppHost 侧仍全链失败：`service returned non-json`。
+
+根因：`ctx.runtime.fetch` 返回的是**真正的 `Response` 对象**，
+而我取了 `res.body`（ReadableStream）去 JSON.parse。→ 改走 `res.text()`。
+
+另外：`/health` 原来只在 GET 上处理，而 `callService` 总是 POST → 桥拿到 404；
+`SERVICE_PORT` 支持环境变量覆盖（方便本地跑 bridge 测试）。
+
+新增 `scripts/smoke-bridge.mjs`：用假 `ctx.runtime`（真子进程 + 真 fetch +
+真 Response）在本地把整座桥跑通 —— 这类“只在真实宿主暴露”的问题第一次能在楼下抓住。
+
 ## [0.3.3] — 2026-09-11
 
 ### 修复：服务不能 spawn —— 拿真实日志才看到的一层

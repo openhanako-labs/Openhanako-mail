@@ -112,13 +112,17 @@ export function decryptField(token) {
   return token; // 两个密钥均失败：原样返回
 }
 
+/** 需要加密的 account.config 字段。新增凭据请加到这里。 */
+const SENSITIVE_CONFIG_KEYS = ["imapPass", "smtpPass", "agentqqAccessToken", "agentqqRefreshToken"];
+
 export function encryptSensitiveFields(account) {
   const out = { ...account };
   if (out.apiKey && typeof out.apiKey === "string") out.apiKey = encryptField(out.apiKey);
   if (out.config && typeof out.config === "object") {
     const cfg = { ...out.config };
-    if (cfg.imapPass && typeof cfg.imapPass === "string") cfg.imapPass = encryptField(cfg.imapPass);
-    if (cfg.smtpPass && typeof cfg.smtpPass === "string") cfg.smtpPass = encryptField(cfg.smtpPass);
+    for (const k of SENSITIVE_CONFIG_KEYS) {
+      if (cfg[k] && typeof cfg[k] === "string") cfg[k] = encryptField(cfg[k]);
+    }
     out.config = cfg;
   }
   return out;
@@ -130,8 +134,9 @@ export function decryptSensitiveFields(account) {
   if (out.apiKey && typeof out.apiKey === "string") out.apiKey = decryptField(out.apiKey);
   if (out.config && typeof out.config === "object") {
     const cfg = { ...out.config };
-    if (cfg.imapPass && typeof cfg.imapPass === "string") cfg.imapPass = decryptField(cfg.imapPass);
-    if (cfg.smtpPass && typeof cfg.smtpPass === "string") cfg.smtpPass = decryptField(cfg.smtpPass);
+    for (const k of SENSITIVE_CONFIG_KEYS) {
+      if (cfg[k] && typeof cfg[k] === "string") cfg[k] = decryptField(cfg[k]);
+    }
     out.config = cfg;
   }
   return out;

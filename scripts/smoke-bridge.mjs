@@ -142,6 +142,20 @@ check("通知入队后能被取走", drained?.ok === true && drained.items?.leng
 const drained2 = await callService("/pending-notify", { limit: 5 });
 check("取走即清空（不会重复弹）", drained2?.items?.length === 0, JSON.stringify(drained2).slice(0, 80));
 
+// AgentQQ 设备码授权：start 是真实网络调用（不需要用户参与），能验到协议对不对。
+// 之所以要这一步：这套协议是从官方 CLI 的 --dry-run 与实测反推的，不是文档里拄的，
+// 一旦失效必须立刻知道。
+const aqq = await callService("/agentqq/login/start", { name: "smoke" });
+check("AgentQQ 设备码申请成功（真网络调用）",
+  aqq?.ok === true && !!aqq.data?.sessionId && !!aqq.data?.inputCode && !!aqq.data?.browserUrl,
+  JSON.stringify(aqq?.data || aqq).slice(0, 160));
+if (aqq?.data?.sessionId) {
+  const st = await callService("/agentqq/login/status", { sessionId: aqq.data.sessionId });
+  check("未授权时状态为 pending", st?.data?.state === "pending", JSON.stringify(st?.data).slice(0, 120));
+}
+const unk = await callService("/agentqq/login/status", { sessionId: "no-such-session" });
+check("未知会话返回 unknown（不抛）", unk?.data?.state === "unknown", JSON.stringify(unk?.data).slice(0, 80));
+
 if (typeof dispose === "function") { try { dispose(); } catch { /* ignore */ } }
 try { proc?.kill("SIGTERM"); } catch { /* ignore */ }
 setTimeout(() => { try { proc?.kill("SIGKILL"); } catch { /* ignore */ } fs.rmSync(home, { recursive: true, force: true }); }, 800);

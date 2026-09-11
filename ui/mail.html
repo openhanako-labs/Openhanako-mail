@@ -570,10 +570,22 @@ setTimeout(function(){try{window.parent.postMessage({source:'hana-plugin',type:'
 
               <!-- 按 provider 动态显示字段 -->
               <div id="accountFields" class="account-fields">
-                <!-- ClawEmail / AgentQQ -->
-                <div data-for="clawemail,agentqq" class="field-group">
+                <!-- ClawEmail -->
+                <div data-for="clawemail" class="field-group">
                   <div class="field-hint">邮箱 API Key（在 .env 中配置或此处填写）</div>
                   <input class="inp" id="accApiKey" placeholder="API Key">
+                </div>
+
+                <!-- AgentQQ：OAuth 设备码授权（无需手工填密钥） -->
+                <div data-for="agentqq" class="field-group" style="display:none">
+                  <div class="field-hint">AgentQQ 通过 OAuth 授权，无需填写密钥；邮箱地址由授权结果决定。</div>
+                  <button type="button" class="btn primary" id="agentqqStart">开始授权</button>
+                  <div id="agentqqBox" style="display:none;margin-top:10px">
+                    <div class="field-hint">在浏览器里打开下面的链接并确认；若提示输入授权码，就填这一串：</div>
+                    <div id="agentqqCode" style="font-weight:700;font-size:17px;letter-spacing:1.5px;margin:6px 0"></div>
+                    <a id="agentqqLink" href="#" target="_blank" rel="noopener" style="word-break:break-all;font-size:12px"></a>
+                    <div id="agentqqStatus" class="field-hint" style="margin-top:8px"></div>
+                  </div>
                 </div>
 
                 <!-- IMAP / 个人邮箱 -->
@@ -591,7 +603,7 @@ setTimeout(function(){try{window.parent.postMessage({source:'hana-plugin',type:'
                 </div>
               </div>
 
-              <button type="submit" class="btn primary">保存</button>
+              <button type="submit" class="btn primary" id="accSaveBtn">保存</button>
             </form>
           </div>
         </div>
@@ -1822,7 +1834,74 @@ window.updateAccountFields = function () {
     var providers = (g.getAttribute('data-for') || '').split(',');
     g.style.display = providers.indexOf(provider) >= 0 ? '' : 'none';
   });
+  // AgentQQ 的邮箱由授权结果决定，不让用户填；保存也交给授权流程
+  var isAqq = provider === 'agentqq';
+  var emailEl = document.getElementById('accEmail');
+  emailEl.style.display = isAqq ? 'none' : '';
+  emailEl.required = !isAqq;
+  var saveBtn = document.getElementById('accSaveBtn');
+  if (saveBtn) saveBtn.style.display = isAqq ? 'none' : '';
 };
+
+/* ── AgentQQ 设备码授权 ── */
+(function () {
+  var sess = null, timer = null;
+  var $ = function (id) { return document.getElementById(id); };
+
+  function stop() { if (timer) { clearInterval(timer); timer = null; } }
+
+  function poll() {
+    if (!sess) return;
+    api('/agentqq/login/status', { method: 'POST', body: JSON.stringify({ sessionId: sess }) })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d || !d.ok) { $('agentqqStatus').textContent = '查询失败：' + ((d && d.error) || '未知错误'); stop(); return; }
+        if (d.state === 'pending') {
+          $('agentqqStatus').textContent = '等待授权中…请在浏览器里完成确认。';
+        } else if (d.state === 'authorized') {
+          stop();
+          $('agentqqStatus').innerHTML = '<b style="color:#2e7d32">授权成功</b>：' + (d.email || '');
+          $('agentqqStart').textContent = '重新授权';
+          toast('AgentQQ 账号已添加：' + (d.email || ''));
+          resetAccountForm();
+          loadAccounts();
+        } else if (d.state === 'expired' || d.state === 'failed') {
+          stop();
+          $('agentqqStatus').textContent = (d.error || '授权未完成') + '（可重新点击开始授权）';
+          $('agentqqStart').textContent = '重新授权';
+        }
+      })
+      .catch(function () { /* 网络抖动，下轮再试 */ });
+  }
+
+  $('agentqqStart').onclick = function () {
+    stop();
+    $('agentqqBox').style.display = '';
+    $('agentqqStatus').textContent = '正在申请设备码…';
+    $('agentqqStart').disabled = true;
+    var name = document.getElementById('accName').value || 'AgentQQ';
+    api('/agentqq/login/start', { method: 'POST', body: JSON.stringify({ name: name }) })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        $('agentqqStart').disabled = false;
+        if (!d || !d.ok) { $('agentqqStatus').textContent = '申请失败：' + ((d && d.error) || '未知错误'); return; }
+        sess = d.sessionId;
+        $('agentqqCode').textContent = d.inputCode || '(无授权码)';
+        var a = $('agentqqLink');
+        a.href = d.browserUrl || '#';
+        a.textContent = d.browserUrl || '';
+        $('agentqqStart').textContent = '重新授权';
+        $('agentqqStatus').textContent = '等待授权中…';
+        toast('已生成授权码，请在浏览器中确认');
+        poll();
+        timer = setInterval(poll, 3000);
+      })
+      .catch(function () {
+        $('agentqqStart').disabled = false;
+        $('agentqqStatus').textContent = '申请失败（网络错误）';
+      });
+  };
+})();
 
 (function () {
   var form = document.getElementById('addAccountForm');
@@ -1833,13 +1912,15 @@ window.updateAccountFields = function () {
     var name = document.getElementById('accName').value;
     var email = document.getElementById('accEmail').value;
     var provider = document.getElementById('accProvider').value;
+    // AgentQQ 由授权流程建账号，不走这里
+    if (provider === 'agentqq') { toast('请点击「开始授权」完成 AgentQQ 授权'); return; }
     if (!name || !email) { toast('请填写名称和邮箱'); return; }
 
     var payload = { action: _editingAccountId ? 'update' : 'create', name: name, email: email, provider: provider };
     if (_editingAccountId) payload.id = _editingAccountId;
 
     // 按 provider 收集配置
-    if (provider === 'clawemail' || provider === 'agentqq') {
+    if (provider === 'clawemail') {
       // 编辑时空值 = 保留原凭据
       var k = document.getElementById('accApiKey').value || '';
       if (k) payload.apiKey = k;
