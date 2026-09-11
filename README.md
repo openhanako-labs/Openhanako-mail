@@ -4,7 +4,7 @@
 
 HanaAgent 原生多邮箱聚合插件。支持 ClawEmail、AgentQQ 官方 API，以及个人邮箱 IMAP/SMTP。
 
-## v2 App（当前主线，v0.4.0）
+## v2 App（当前主线）
 
 本仓库根目录**就是一个 v2 App 包**（`manifestVersion: 2`），安装后落在 `<HANA_HOME>/apps/hanako-mail/`。
 v1（`<HANA_HOME>/plugins/`，`manifestVersion` 缺失或为 1）已被官方永久冻结，不再作为发布分支。
