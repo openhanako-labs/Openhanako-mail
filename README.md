@@ -151,6 +151,24 @@ App 装在 `~/.hanako/apps/hanako-mail/`（v2 不再用 `plugins/`）。
 依赖**随包发布**（`backend/node_modules` 已入包，约 14 MB）。
 服务跑在受管 native 运行时里、**不能 spawn**，所以无法自己 `npm install` —— 缺依赖时服务会明确报错。
 
+### 更新时先停用（踩过）
+
+**直接更新一个正在运行的应用会失败**，报：
+
+```
+安装准备失败：Package file worker stopped before completing
+```
+
+原因：应用的后端服务是从 `apps/<id>/runtime/` 跑起来的，那些文件被进程占着，
+Windows 下无法替换。正确顺序：
+
+```
+停用 → 卸载 → 安装新包
+```
+
+另外：**「重新加载」不会改写安装记录** —— registry 里的版本号会停在最后一次
+正规安装的版本。想让记录与实际一致，走一次卸载 + 安装。
+
 ### 权限说明（manifest）
 
 v2 的能力声明（`manifest.json` 的 `capabilities`），安装审批时会逐项列出：
