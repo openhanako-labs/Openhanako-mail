@@ -83,8 +83,9 @@ export async function apply(ctx) {
     log.info(`${APP_ID} v2 ready`, { runtimeId: serviceRuntimeId(), proxyPrefix: serviceProxyPrefix() });
   } else {
     log.warn(`${APP_ID} 已加载，邮件后端暂不可用 —— 将在首次收发时自动重试`, {
-      hint: "若一直不可用：本应用需要 app/runtime.execute + app/runtime.native "
-        + "+ app/runtime.network 三项授权（设置 → 安全 → 应用能力），"
+      hint: "先看上一条 [ERROR] 的 error/hint 字段（已按错误类型分类）：授权不足、"
+        + "端口占用、宿主路径 reparse 三种情况各不相同，不要一律按授权排查。"
+        + "实测最常见的是安装目录或 HANA_HOME 带符号链接（native-identity 直接拒绝），与授权无关。"
         + "另外必须能监听 127.0.0.1:43179。工具与卡片仍可用。",
     });
   }
