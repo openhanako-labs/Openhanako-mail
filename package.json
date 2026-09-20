@@ -16,6 +16,7 @@
   "homepage": "https://github.com/openhanako-labs/Openhanako-mail",
   "scripts": {
     "smoke": "node scripts/smoke-load.mjs",
-    "icon": "node scripts/make-icon.cjs"
+    "icon": "node scripts/make-icon.cjs",
+    "deps": "node scripts/restore-backend-deps.mjs"
   }
 }

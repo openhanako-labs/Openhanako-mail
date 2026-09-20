@@ -1022,8 +1022,26 @@ var DEFAULT_FOLDERS = [
 ];
 
 /* ── 账号 ── */
+/* 后端不可用时的账号区渲染。
+ * 必须与「真的没账号」分开：后端返回 {ok:false}（或响应根本不是 JSON）时，
+ * 如果静默降级成「暂无账号」，用户会以为配置丢了去重填一遍。 */
+function renderAccountsUnavailable(msg) {
+  state.accounts = [];
+  var el = document.getElementById('acctList');
+  if (el) el.innerHTML = '<div class="empty" style="padding:14px 8px;color:#c0392b">后端未就绪：' + esc(msg) +
+    '<br><span style="font-size:11px;color:#888">账号数据仍在，刷新后重试</span></div>';
+  var a = document.getElementById('metricAccounts'); if (a) a.textContent = '-';
+  var u = document.getElementById('metricUnread'); if (u) u.textContent = '-';
+  var s = document.getElementById('metricSynced'); if (s) s.textContent = '-';
+  var f = document.getElementById('folderList'); if (f) f.innerHTML = '<div class="empty" style="padding:14px 8px">后端未就绪</div>';
+}
+
 function loadAccounts() {
   return api('/accounts').then(function (r) { return r.json(); }).then(function (d) {
+    if (!d || d.ok === false) {
+      renderAccountsUnavailable(d && (d.error || d.message) || '后端未响应');
+      return;
+    }
     state.accounts = d.data || [];
     var el = document.getElementById('acctList');
     if (!state.accounts.length) {
@@ -1047,7 +1065,10 @@ function loadAccounts() {
         '</button>';
     }).join('');
     if (!state.accountId) selectAccount(state.accounts[0].id);
-  }).catch(function () { toast('加载账号失败'); });
+  }).catch(function (e) {
+    renderAccountsUnavailable(e && e.message ? e.message : '请求失败');
+    toast('加载账号失败');
+  });
 }
 
 function selectAccount(id) {
