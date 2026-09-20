@@ -232,6 +232,12 @@ const mailHtml = fs.readFileSync(path.join(ROOT, "ui", "mail.html"), "utf-8");
 // 旧的 `d.ok === false` 判据抓不住它，于是被当「暂无账号」渲染。
 check("卡片把 HTTP 错误转成可读 rejection", mailHtml.includes("function apiExpectingOk"));
 check("卡片校验 data 必须是数组（而非 d.data || []）", mailHtml.includes("Array.isArray(d.data)"));
+// 卡片凭据：宿主把 sessionToken 放在自己 URL 的路径里（/ui/_surface/<token>/），
+// 只取 ?token= 会永远拿到 null → 所有调用 403 → 静默成「暂无账号」。
+check("卡片从自己 URL 路径提取 surface session token",
+  mailHtml.includes("ui\\/_surface\\/"));
+check("卡片把 token 放进 X-Hana-App-Surface-Session 头", mailHtml.includes("X-Hana-App-Surface-Session"));
+check("附件/图片代理 URL 改走 appSurfaceSession 查参数", mailHtml.includes("appSurfaceSession="));
 
 console.log(`\nsmoke-load: ${failed} failure(s)`);
 process.exit(failed === 0 ? 0 : 1);

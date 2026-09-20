@@ -722,7 +722,24 @@ setTimeout(function(){try{window.parent.postMessage({source:'hana-plugin',type:'
 // 不再由后端读模板注入 —— 页面因此对 App 改名 / 换安装位置都免疫。
 var APP_ID = decodeURIComponent(location.pathname.split('/')[3] || 'hanako-mail');
 var API_BASE = '/api/apps/' + APP_ID + '/routes';
-var _t = new URL(location.href).searchParams.get('token');
+
+/* 卡片自己的 URL 就是 /api/apps/<id>/ui/_surface/<sessionToken>/<route>。
+ * 那个 sessionToken 才是调后端路由的凭据。宿主认凭据的顺序（bundle/index.js）：
+ *   路径 /routes/_runtime/<rid>/_surface/<token>/
+ *   → 头  X-Hana-App-Surface-Session
+ *   → 查  ?appSurfaceSession=<token>
+ *   → 曲  cookie hana_app_runtime=<token>
+ *   → 查  ?token=<loopbackToken>（只对本机回环有效）
+ *
+ * 之前只取 ?token=，而宿主给卡片的参数叫 hana-app-surface-id（只是 surfaceId，
+ * 不是凭据），所以这里永远是 null —— 所有 API 调用都是 403 missing_credential，
+ * 被静默渲染成「暂无账号」。现在从自己 URL 的路径里把 sessionToken 捡回来。 */
+var _surfaceToken = (function () {
+  var m = location.pathname.match(/^\/api\/apps\/[^/]+\/ui\/_surface\/([^/]+)\/?/);
+  if (m) { try { return decodeURIComponent(m[1]); } catch (e) { return m[1]; } }
+  var q = new URL(location.href).searchParams;
+  return q.get('appSurfaceSession') || q.get('token') || '';
+})();
 
 // 宿主会在 ui/ 路由上带 hana-theme；优先于本地保存的偏好。
 (function () {
@@ -736,9 +753,18 @@ var _t = new URL(location.href).searchParams.get('token');
 // 注意：该代理通过独立子进程拉取外网（绕开 Hana 对插件内 global fetch 的拦截），
 // 在 Hana dev 环境和正式版中均可用（已验证带 token 返回 HTTP 200 逐字节一致）。
 var USE_IMAGE_PROXY = true;
+/* 把 surface session token 同时走头和查参数：头不进 URL/日志，查参数是兼底。
+ * 宿主两边都认，多一条路多一层保险。 */
 function api(path, options) {
-  var u = API_BASE + path + (_t ? (path.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(_t) : '');
-  return fetch(u, { headers: { 'Content-Type': 'application/json' }, ...options });
+  var opts = Object.assign({}, options || {});
+  var h = Object.assign({}, opts.headers || {});
+  if (!h['Content-Type']) h['Content-Type'] = 'application/json';
+  if (_surfaceToken) h['X-Hana-App-Surface-Session'] = _surfaceToken;
+  opts.headers = h;
+  var u = API_BASE + path + (_surfaceToken
+    ? (path.indexOf('?') >= 0 ? '&' : '?') + 'appSurfaceSession=' + encodeURIComponent(_surfaceToken)
+    : '');
+  return fetch(u, opts);
 }
 
 function currentTheme() {
@@ -884,12 +910,13 @@ function joinAddrs(a) {
   return String(a);
 }
 
-// 构建附件下载/预览地址（与 api() 一致，自动带上 token）
+// 构建附件下载/预览地址（与 api() 一致，自动带上 surface session token）
+// 这里是 <a href> / window.open，只能走查参数，头带不上去。
 function attachmentUrl(messageId, partId, download) {
   var p = '/attachments/' + encodeURIComponent(messageId) + '/' + encodeURIComponent(partId) +
     '?accountId=' + encodeURIComponent(state.accountId || '') +
     (download ? '&download=1' : '') +
-    (_t ? '&token=' + encodeURIComponent(_t) : '');
+    (_surfaceToken ? '&appSurfaceSession=' + encodeURIComponent(_surfaceToken) : '');
   return API_BASE + p;
 }
 
@@ -1005,10 +1032,11 @@ function rewriteImages(html, atts, messageId) {
   return html;
 }
 
-// 构建图片代理 URL（与 api() 一致，自动带上 token）
+// 构建图片代理 URL（与 api() 一致，自动带上 surface session token）
+// <img src> 只能走查参数。
 function proxyUrl(externalUrl) {
   return API_BASE + '/image-proxy?url=' + encodeURIComponent(externalUrl) +
-    (_t ? '&token=' + encodeURIComponent(_t) : '');
+    (_surfaceToken ? '&appSurfaceSession=' + encodeURIComponent(_surfaceToken) : '');
 }
 
 /* ── 全局状态 ── */
