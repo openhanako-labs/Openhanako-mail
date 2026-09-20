@@ -190,7 +190,10 @@ check("服务侧（backend/*.mjs）无 spawn/execFile", (() => {
 // 通知派发必须在 AppHost 侧（那里有 --allow-child-process）
 check("通知派发在 AppHost 侧（lib/notify-drain.mjs）", fs.existsSync(path.join(ROOT, "lib", "notify-drain.mjs")));
 check("服务不自己发通知，而是入队", fs.readFileSync(path.join(ROOT, "runtime", "service.mjs"), "utf-8").includes("_pending_notify"));
-check("native profile 与 manifest 一致", rtHost.includes('profile: "native"'));
+check("profile 降级链首位是 native（优先有沙箱）", rtHost.includes('const RUNTIME_PROFILES = ["native"'));
+check("profile 降级链含 local-machine（native 沙箱身份失败时的退路）", rtHost.includes('RUNTIME_PROFILES = ["native", "local-machine"]'));
+check("manifest 声明了 app/runtime.local-machine", caps.includes("app/runtime.local-machine"));
+check("仅沙箱身份类错误才触发降级", rtHost.includes("function shouldFallThrough"));
 check("network: external 与 manifest 一致", rtHost.includes('network: "external"'));
 check("readyMarker 与服务端一致",
   rtHost.includes("HANA_MAIL_SERVICE_READY")

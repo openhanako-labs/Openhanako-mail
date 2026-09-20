@@ -12,6 +12,7 @@
     "app/process.spawn",
     "app/runtime.execute",
     "app/runtime.native",
+    "app/runtime.local-machine",
     "app/runtime.network",
     "app/models.read",
     "app/provider.credentials.read",
