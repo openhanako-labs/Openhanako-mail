@@ -1036,13 +1036,51 @@ function renderAccountsUnavailable(msg) {
   var f = document.getElementById('folderList'); if (f) f.innerHTML = '<div class="empty" style="padding:14px 8px">后端未就绪</div>';
 }
 
+/* HTTP 状态非 2xx 时，把 body 里能读出的原因抽出来。不判断就继续走 .json() 的话，
+ * 403 的 {"error":"forbidden","reason":"missing_credential"} 会穿过下面的判断：
+ * d.ok 是 undefined（不是 false），d.data 是 undefined，于是卡片把它当「没账号」。
+ * 实测这个静默降级正是「0 账号」的来源。 */
+function httpErrorText(r) {
+  var t = r.statusText || ('HTTP ' + r.status);
+  try {
+    var b = JSON.parse(r._text || '');
+    if (b && typeof b === 'object') {
+      var parts = [];
+      if (b.error) parts.push(b.error);
+      if (b.reason) parts.push(String(b.reason).replace(/_/g, ' '));
+      if (b.message) parts.push(b.message);
+      if (parts.length) t = parts.join(' / ');
+    }
+  } catch (e) {}
+  return t;
+}
+
+/* 把 api() 的返回值包一层，把 HTTP 错误变成可读的 Promise rejection。 */
+function apiExpectingOk(p, options) {
+  return api(p, options).then(function (r) {
+    if (!r.ok) {
+      return r.text().then(function (t) {
+        r._text = t;
+        var e = new Error(httpErrorText(r));
+        e.status = r.status;
+        throw e;
+      });
+    }
+    return r.json();
+  });
+}
+
 function loadAccounts() {
-  return api('/accounts').then(function (r) { return r.json(); }).then(function (d) {
+  return apiExpectingOk('/accounts').then(function (d) {
     if (!d || d.ok === false) {
       renderAccountsUnavailable(d && (d.error || d.message) || '后端未响应');
       return;
     }
-    state.accounts = d.data || [];
+    if (!Array.isArray(d.data)) {
+      renderAccountsUnavailable('后端返回格式异常（缺 data 数组）');
+      return;
+    }
+    state.accounts = d.data;
     var el = document.getElementById('acctList');
     if (!state.accounts.length) {
       el.innerHTML = '<div class="empty" style="padding:14px 8px">暂无账号</div>';

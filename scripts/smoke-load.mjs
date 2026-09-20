@@ -227,5 +227,11 @@ for (const [i, card] of (manifest.contributes?.cards || []).entries()) {
 dispose();
 fs.rmSync(home, { recursive: true, force: true });
 
+const mailHtml = fs.readFileSync(path.join(ROOT, "ui", "mail.html"), "utf-8");
+// 403 的 body 是 {error:"forbidden",reason:"missing_credential"}，没有 ok 字段，
+// 旧的 `d.ok === false` 判据抓不住它，于是被当「暂无账号」渲染。
+check("卡片把 HTTP 错误转成可读 rejection", mailHtml.includes("function apiExpectingOk"));
+check("卡片校验 data 必须是数组（而非 d.data || []）", mailHtml.includes("Array.isArray(d.data)"));
+
 console.log(`\nsmoke-load: ${failed} failure(s)`);
 process.exit(failed === 0 ? 0 : 1);

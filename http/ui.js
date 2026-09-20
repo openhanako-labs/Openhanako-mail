@@ -17,7 +17,7 @@ import {
 // 常驻 worker IPC：替代「每次 API 调用冷启 node 子进程跑 inbox.mjs」
 import * as workerClient from "../backend/worker-client.mjs";
 // v2：安装目录只读，一切运行时写入落到 App 数据目录（与子进程共用同一路径）
-import { runtimeDataDir } from "../lib/env.mjs";
+import { runtimeDataDir, APP_ID, legacyDataDir } from "../lib/env.mjs";
 // 需要网络/外部文件/子进程的活全部转发给受管 native 服务（见 lib/runtime-host.mjs）
 import { callService } from "../lib/runtime-host.mjs";
 
@@ -303,6 +303,32 @@ export default function (app, ctx) {
   // 凭据加密数据目录与 accounts.json 对齐（routes/tools/ws-monitor 同一路径）
   setCryptoDataDir(dataDir);
   const cacheDir = path.join(dataDir, "cache");
+
+  // ── accounts.json 路径解析 ─────────────────────────────────
+  // v1 的写法是 path.join(ctx.dataDir, ctx.pluginId)，能跑通全靠 legacyCtx 把
+  // dataDir 报成「父目录」做反向偏移。但那个投影只在 registerRoutes 真的把 lctx
+  // 传进来时成立；传错一个是静默的多套一层目录 —— accounts.json 读不到，
+  // 卡片就显示「暂无账号」，而账号其实一直在，后端也正常收信。
+  //
+  // 按候选顺序取第一个真实存在 accounts.json 的目录，**读和写用同一个**，
+  // 并在日志里写清命中哪一个。都不存在时落回 v1 约定路径（首次添加会写到那里）。
+  // 候选是去重后的列表：v2 的 ctx.dataDir 已含 App id，拼上 pluginId 会重复。
+  const _acctCandidates = [dataDir, ctx.dataDir, runtimeDataDir(), path.join(runtimeDataDir(), APP_ID), legacyDataDir()];
+  const _acctSeen = new Set();
+  let _accountsDir = dataDir;
+  for (const d of _acctCandidates) {
+    if (!d || _acctSeen.has(d)) continue;
+    _acctSeen.add(d);
+    if (fs.existsSync(path.join(d, "accounts.json"))) {
+      _accountsDir = d;
+      break;
+    }
+  }
+  const _accountsFile = path.join(_accountsDir, "accounts.json");
+  if (_accountsDir !== dataDir) {
+    ctx.log && ctx.log.warn("accounts.json 不在 v1 约定路径上，已改用实际命中的目录",
+      { tried: dataDir, resolved: _accountsDir, file: _accountsFile });
+  }
   // v2：卡片界面是 ui/ 下的静态文档（由宿主持有本 App 的 ui/ 路由），
   // 不再由这里读模板注入 pluginId —— 页面自己从 location 推导 appId。
 
@@ -341,13 +367,14 @@ export default function (app, ctx) {
   }
 
   function accounts() {
-    const raw = readJson(path.join(dataDir, "accounts.json"), []);
-    return raw.map(decryptSensitiveFields);
+    const raw = readJson(_accountsFile, []);
+    return Array.isArray(raw) ? raw.map(decryptSensitiveFields) : [];
   }
 
   function saveAccounts(list) {
     const encrypted = list.map(encryptSensitiveFields);
-    writeJson(path.join(dataDir, "accounts.json"), encrypted);
+    try { fs.mkdirSync(_accountsDir, { recursive: true }); } catch { /* 已存在 */ }
+    writeJson(_accountsFile, encrypted);
   }
 
   const getAccounts = (c) => c.json({ ok: true, data: accounts() });
