@@ -69,6 +69,21 @@ async function createClient(apiKey, user, logger = null) {
 const listCache = new Map();
 const CACHE_TTL_MS = 5000;
 
+// ⚠ `since` / `before` 传下去是**无效的**。
+// SDK 的 transport.listMessages 只认这几个键（dist/esm/index.js）：
+//   fid / order / desc / start / limit / filterFlags
+// 其余键被静默丢弃 —— 传了不报错，也不起作用。
+// 保留这两个 key 只为不破坏调用方签名；要真做增量只能用默认的客户端比对
+//（http/ui.js 的 _poll_last_ids.json）或 `start` 分页。
+//
+// ⚠ 但 `order` / `desc` **在名单里，是透传的**（2026-09-22 实测确认）。
+// 以前这里只传 fid/limit，于是两个都成了 undefined，服务端按默认序返回 ——
+// 结果是**按时间升序**，而 `limit` 截掉的是**最新**的那头。
+// 实测同一邮箱 fid=1 limit=50：
+//   不传 → 2026-05-04 ~ 05-14（最旧的 50 封，最新那封 09-22 永远看不到）
+//   传 desc → 2026-09-22 ~ 08-06（最新的 50 封）
+// 所以下面必须显式要倒序。同一份 SDK 里的 searchMessages 就是这么干的。
+
 export async function listMessages(fid = "1", options = {}) {
   const { from, subject, keyword, limit = 20, since, before, unread, fts, forceFresh = false } = options;
   const numLimit = Number(limit) || 20;
@@ -84,7 +99,18 @@ export async function listMessages(fid = "1", options = {}) {
 
   const client = await getClient(process.env.CLAWEMAIL_API_KEY, process.env.CLAWEMAIL_ADDRESS);
 
-  const queryParams = { fid, limit: Math.max(numLimit, 50) };
+  // limit 的语义得诚实：**只有在需要后过滤时**才多取一些当余量。
+  // 原来一律 `Math.max(numLimit, 50)`，于是 `list --limit=5`（AppHost 的 60 秒轮询）
+  // 每次都真从服务端取 50 封再本地砍到 5 封 —— 60×50=3000 封/小时里只有 300 是该要的。
+  // 后过滤会把结果变少，所以有过滤条件时仍然保底 50 当余量。
+  const hasPostFilter = Boolean(from || subject || keyword || before || fts);
+  // order/desc 必须显式给：不给就是“默认序 + 截掉最新”，见上面的长注释。
+  const queryParams = {
+    fid,
+    order: "date",
+    desc: true,
+    limit: hasPostFilter ? Math.max(numLimit, 50) : numLimit,
+  };
   if (unread) queryParams.unread = true;
   if (since) queryParams.since = since;
   if (before) queryParams.before = before;

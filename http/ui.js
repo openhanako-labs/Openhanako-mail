@@ -8,6 +8,8 @@ import * as llm from "../backend/llm.mjs";
 import { resolveLlmConfig, listChatModels, getProviderCatalog } from "../backend/hana-llm.mjs";
 import * as blocklist from "../backend/blocklist.mjs";
 import { htmlToText } from "../backend/common.mjs";
+// 后端依赖清单的判定只有一份（从 backend/package.json 推导），见 backend/deps.mjs
+import { missingBackendDeps } from "../backend/deps.mjs";
 // 凭据加密统一走公共模块（routes/tools/ws-monitor 共用，消除加解密不对称）
 import {
   setCryptoDataDir,
@@ -19,7 +21,8 @@ import * as workerClient from "../backend/worker-client.mjs";
 // v2：安装目录只读，一切运行时写入落到 App 数据目录（与子进程共用同一路径）
 import { runtimeDataDir } from "../lib/env.mjs";
 // 需要网络/外部文件/子进程的活全部转发给受管 native 服务（见 lib/runtime-host.mjs）
-import { callService } from "../lib/runtime-host.mjs";
+import { callService, isServiceReady, serviceProfile } from "../lib/runtime-host.mjs";
+import { notificationStatus, sendTestNotification } from "../lib/notify-drain.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -83,28 +86,21 @@ function installLockPath() {
 
 function checkBackendDeps(account) {
   if (!account) return null;
-  const email = (account.email || "").toLowerCase();
 
-  // ClawEmail 需要 @clawemail/node-sdk
-  if (email.endsWith("@claw.163.com")) {
-    const sdkPath = path.join(BACKEND_DIR, "node_modules", "@clawemail", "node-sdk", "package.json");
-    if (!fs.existsSync(sdkPath)) {
-      if (fs.existsSync(installLockPath())) return { installing: true };
-      return { error: "ClawEmail SDK 未安装。请先在 backend/ 目录执行 npm install，或改用其他后端。", hint: "cd backend && npm install" };
-    }
-  }
+  // 清单来自 backend/deps.mjs（唯一判定，从 backend/package.json 推导）。
+  // 这里以前是按账号类型分叉的两份硬编码清单，0.6.0 把 imap 换成 imapflow 时
+  // 两边都没跟着改，于是“IMAP 依赖未安装”这条化石提示把 QQ 邮箱的同步整条挡住。
+  //
+  // 也不再按账号类型分叉：后端在模块加载时就会 import imapflow / @clawemail/node-sdk，
+  // 任何一个缺失都会把整个后端带下去 —— “缺了就是全都不能用”才是诚实的说法。
+  const missing = missingBackendDeps(BACKEND_DIR);
+  if (!missing.length) return null;
 
-  // 非 API 邮箱（IMAP 个人邮箱）需要 imap 和 nodemailer
-  if (!email.endsWith("@claw.163.com") && !email.endsWith("@agent.qq.com")) {
-    const imapPath = path.join(BACKEND_DIR, "node_modules", "imap", "package.json");
-    const nmPath = path.join(BACKEND_DIR, "node_modules", "nodemailer", "package.json");
-    if (!fs.existsSync(imapPath) || !fs.existsSync(nmPath)) {
-      if (fs.existsSync(installLockPath())) return { installing: true };
-      return { error: "IMAP 依赖未安装。请先在 backend/ 目录执行 npm install，否则个人邮箱无法使用。", hint: "cd backend && npm install" };
-    }
-  }
-
-  return null;
+  if (fs.existsSync(installLockPath())) return { installing: true };
+  return {
+    error: `后端依赖缺失：${missing.join("、")}。这些依赖随安装包发布（backend/node_modules），当前安装不完整。`,
+    hint: "正式安装：重新安装本应用；开发目录：cd backend && npm install。",
+  };
 }
 
 // 统一处理依赖检查结果：安装中→返回 202，缺失→返回 400，OK→返回 false
@@ -1099,17 +1095,10 @@ export default function (app, ctx) {
   app.get("/image-proxy", getImageProxy);
 
   // ── 依赖安装状态查询（前端轮询用）──
-  app.get("/deps-status", (c) => {    const installing = fs.existsSync(installLockPath());
-    const missing = [];
-    // 检查各后端核心依赖
-    const checks = [
-      ["@clawemail/node-sdk", path.join(BACKEND_DIR, "node_modules", "@clawemail", "node-sdk", "package.json")],
-      ["imap", path.join(BACKEND_DIR, "node_modules", "imap", "package.json")],
-      ["nodemailer", path.join(BACKEND_DIR, "node_modules", "nodemailer", "package.json")],
-    ];
-    for (const [name, p] of checks) {
-      if (!fs.existsSync(p)) missing.push(name);
-    }
+  app.get("/deps-status", (c) => {
+    const installing = fs.existsSync(installLockPath());
+    // 与 checkBackendDeps 用同一份判定（以前这里又是一份硬编码清单，会各自腐烂）
+    const missing = missingBackendDeps(BACKEND_DIR);
     return c.json({ ok: true, installing, missing, ready: missing.length === 0 && !installing });
   });
 
@@ -1141,8 +1130,14 @@ export default function (app, ctx) {
     return c.json(r?.ok ? { ok: true, ...r.data } : { ok: false, error: r?.error || "查询授权状态失败" });
   });
 
+  // 点击回跳文件与 toast 助手同目录（app-data）。
+  //
+  // 原来读的是 os.tmpdir()/hanako-mail-click.json，而写它的是 mail-toast.cjs ——
+  // 那个进程在权限模型里、写不进 Temp，所以这条回跳链从未真正落地过。现在两侧对齐。
+  const CLICK_FILE = path.join(dataDir, "notify-click.json");
+
   const getClicksLatest = (c) => {
-    const clickFile = path.join(os.tmpdir(), "hanako-mail-click.json");
+    const clickFile = CLICK_FILE;
     try {
       if (!fs.existsSync(clickFile)) return c.json({ ok: true, data: null });
       const raw = fs.readFileSync(clickFile, "utf-8");
@@ -1162,8 +1157,35 @@ export default function (app, ctx) {
     }
   };
 
+  // ── 通知链路的观测与自检 ──
+  //
+  // 补的是「失败只存在于日志里」这个缺口：原先一条通知没弹出来，用户侧完全不可见 ——
+  // 实测两次失败就那样躺了两天，没人发现。
+  const getNotifyStatus = async (c) => {
+    const local = notificationStatus();
+    const q = await callService("/pending-notify", { limit: 0 });
+    return c.json({
+      ok: true,
+      data: {
+        ...local,
+        queueDepth: typeof q?.depth === "number" ? q.depth : null,
+        serviceReady: isServiceReady(),
+        // native 沙箱建不起来时服务会降级到 local-machine，
+        // 这件事用户应该看得见，而不是只在日志里。
+        serviceProfile: serviceProfile(),
+      },
+    });
+  };
+
+  const postNotifyTest = async (c) => {
+    const r = await sendTestNotification(console);
+    return c.json({ ok: true, data: r });
+  };
+
   app.post("/notify", postNotify);
   app.get("/clicks/latest", getClicksLatest);
+  app.get("/notify-status", getNotifyStatus);
+  app.post("/notify-test", postNotifyTest);
   app.post("/llm-detect", postLlmDetect);
   app.post("/llm-test", postLlmTest);
 
@@ -1228,7 +1250,11 @@ export default function (app, ctx) {
   setTimeout(pollAccounts, 30 * 1000);
 
   // ── 后台自动同步（用户需求：自动同步，而非仅手动） ──
-  const AUTO_SYNC_INTERVAL_MS = 3 * 60 * 1000; // 3 分钟
+  // 6 分钟（原来 3 分钟）。这一轮要发两次请求：list --limit=50 与 filter-spam（内部再拉一批），
+  // 改 6 分钟后从 20 轮/小时降到 10 轮。
+  // 不必担心新邮件延迟：60 秒轮询（pollAccounts）负责“有新邮件就让它可见”，
+  // 这里负责的是“定期把缓存对齐服务器 + 跑黑名单”。
+  const AUTO_SYNC_INTERVAL_MS = 6 * 60 * 1000; // 6 分钟
   let autoSyncRunning = false;
   async function autoSyncAccounts() {
     if (autoSyncRunning) return; // 防止与手动同步或上一轮重叠

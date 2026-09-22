@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 // accounts.json 中的 apiKey 是加密存储的（routes/ui.js 加密落盘），读取后必须解密，
 // 否则 MailClient 会拿到 "ENC:..." 密文导致 WebSocket 实时收件失效。
 import { setCryptoDataDir, decryptSensitiveFields } from "./cred-crypto.mjs";
+import { appendRolling } from "./log-roll.mjs";
 
 // 供 runtime/service.mjs 覆盖数据目录（服务启动时先设好再 import 本模块）
 export function setDataDir(dir) { if (dir) process.env.HANAKO_PLUGIN_DATA = dir; }
@@ -31,7 +32,7 @@ const LOG_PATH = path.join(getDataDir(), "ws-monitor.log");
 function log(level, msg, data) {
   const ts = new Date().toISOString();
   const line = data ? `[${ts}] [${level}] ${msg} ${JSON.stringify(data)}` : `[${ts}] [${level}] ${msg}`;
-  try { fs.appendFileSync(LOG_PATH, line + "\n"); } catch {}
+  appendRolling(LOG_PATH, line);
   console.log(line);
 }
 
@@ -43,6 +44,55 @@ function ensureDir(p) {
   try { fs.mkdirSync(p, { recursive: true }); } catch {}
 }
 
+// ── cache/ws-*.json 清理 ────────────────────────────────────────────────
+// 每封实时收到的邮件都会在 cache/ 落一个 ws-<accountId>-<mailId>.json（含正文全文），
+// 原来**没有任何清理机制** —— 2026-09-22 实测 62 个文件 / 1.65 MB，随收信量线性增长，
+// 最大的单个已 529 KB。
+//
+// ★ 只按「数量」淘汰，**故意不设时间上限**。
+// 这两个文件看起来像缓存，其实不是：`readWsCache()`（http/ui.js:324、tools/sync.js:21）
+// 把它们整个并进邮件列表，而服务器侧固定只给最新 50 封（`list --limit=50`）——
+// 比那 50 封更老的、只靠实时通道收到的信，**这份文件是它们在本地唯一的痕迹**。
+// 最初写成「14 天」时实测会删掉 62 个里的 54 个，等于让列表里的旧邮件凭空消失。
+// 所以这里把它当「可见归档」处理：只封顶数量，不按时间清。
+const WS_CACHE_MAX_FILES = 500;
+const WS_CACHE_PRUNE_EVERY = 50; // 每写入这么多封清理一次
+let _savesSincePrune = 0;
+
+export function pruneWsCache() {
+  const cacheDir = getCacheDir();
+  let names;
+  try {
+    names = fs.readdirSync(cacheDir);
+  } catch {
+    return { removed: 0, kept: 0 };
+  }
+  const entries = [];
+  for (const name of names) {
+    if (!name.startsWith("ws-") || !name.endsWith(".json")) continue;
+    const full = path.join(cacheDir, name);
+    let st;
+    try {
+      st = fs.statSync(full);
+    } catch {
+      continue;
+    }
+    entries.push({ full, mtime: st.mtimeMs });
+  }
+  entries.sort((a, b) => b.mtime - a.mtime); // 新 → 旧
+  let removed = 0;
+  for (let i = 0; i < entries.length; i++) {
+    if (i < WS_CACHE_MAX_FILES) continue; // 上限内的一律不动
+    try {
+      fs.unlinkSync(entries[i].full);
+      removed++;
+    } catch {
+      /* 删不掉就留着，下次再说 */
+    }
+  }
+  return { removed, kept: entries.length - removed };
+}
+
 function saveMail(accountId, mail) {
   const cacheDir = getCacheDir();
   ensureDir(cacheDir);
@@ -52,6 +102,12 @@ function saveMail(accountId, mail) {
     fs.writeFileSync(file, JSON.stringify(mail, null, 2), "utf-8");
   } catch (e) {
     log("WARN", "save mail failed", { mailId: mail.id, err: e.message });
+  }
+  _savesSincePrune++;
+  if (_savesSincePrune >= WS_CACHE_PRUNE_EVERY) {
+    _savesSincePrune = 0;
+    const pruned = pruneWsCache();
+    if (pruned.removed) log("INFO", "缓存清理", pruned);
   }
 }
 
@@ -175,8 +231,10 @@ async function startAccount(account) {
 // 启动所有账号
 export async function startAll() {
   ensureDir(getDataDir());
+  const pruned = pruneWsCache();
   const accounts = loadAccounts();
   log("INFO", "数据目录", getDataDir());
+  log("INFO", "缓存清理", pruned);
   log("INFO", "账号数量", accounts.length);
   for (const account of accounts) {
     log("INFO", "启动账号", account.email);

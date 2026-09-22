@@ -34,6 +34,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomBytes } from "node:crypto";
 import { startDeviceFlow, waitForAuthorization } from "../backend/agentqq-auth.mjs";
 import { decryptSensitiveFields, encryptSensitiveFields } from "../backend/cred-crypto.mjs";
+// 依赖判定只有一份（从 backend/package.json 推导），与 AppHost 侧（http/ui.js）共用
+import { missingBackendDeps } from "../backend/deps.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const INSTALL_DIR = path.resolve(__dirname, "..");
@@ -72,16 +74,11 @@ function log(level, msg, data) {
 // 原来这里跑 `npm install`（spawn）。但受管 native 运行时被 Job Object 管着，
 // **服务不能再 spawn 任何进程**（实测报 spawn EPERM），npm 永远跑不起来。
 // 因此改为：依赖随包发布（backend/node_modules 入包），这里只做检查与明确报错。
+//
+// 判定抽到 backend/deps.mjs —— AppHost 那一侧（http/ui.js）也要用同一份规则。
+// 起因：那边曾有两份硬编码清单，0.6.0 换依赖时没同步，把 QQ 邮箱的同步整条挡住了。
 function checkDeps() {
-  let manifest;
-  try { manifest = JSON.parse(fs.readFileSync(path.join(BACKEND_DIR, "package.json"), "utf-8")); }
-  catch { return []; }
-  const missing = [];
-  for (const dep of Object.keys(manifest.dependencies || {})) {
-    const rel = dep.startsWith("@") ? path.join("node_modules", dep.split("/")[0], dep.split("/")[1]) : path.join("node_modules", dep);
-    if (!fs.existsSync(path.join(BACKEND_DIR, rel, "package.json"))) missing.push(dep);
-  }
-  return missing;
+  return missingBackendDeps(BACKEND_DIR);
 }
 
 function reportDeps() {
@@ -245,13 +242,58 @@ function notifyDir() {
   return dir;
 }
 
+// 队列上限与寿命。
+//
+// 原来两者都没 —— 队列只增不减，且“取走即删”一旦失败就彻底丢。
+// 上限取“丢最旧”而不是“拒新的”：用户更关心刚到的信。
+const NOTIFY_MAX = 200;
+const NOTIFY_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** 读出队列（带 id），按入队时间升序；顺带清掉过期与损坏的条目。 */
+function listNotifications() {
+  const dir = notifyDir();
+  let files = [];
+  try { files = fs.readdirSync(dir).filter((f) => f.endsWith(".json")); } catch { return []; }
+  const now = Date.now();
+  const rows = [];
+  for (const f of files) {
+    const p = path.join(dir, f);
+    let rec = null;
+    try { rec = JSON.parse(fs.readFileSync(p, "utf-8")); } catch { rec = null; }
+    if (!rec) { try { fs.unlinkSync(p); } catch { /* ignore */ } continue; }
+    const at = Date.parse(rec.queuedAt || "");
+    if (Number.isFinite(at) && now - at > NOTIFY_TTL_MS) {
+      try { fs.unlinkSync(p); } catch { /* ignore */ }
+      continue;
+    }
+    rows.push({ id: f.replace(/\.json$/, ""), ...rec });
+  }
+  rows.sort((a, b) => String(a.queuedAt || "").localeCompare(String(b.queuedAt || "")));
+  return rows;
+}
+
 function queueNotification(payload) {
   try {
+    const messageId = String(payload.messageId || "");
+    const rows = listNotifications();
+
+    // 同一封邮件去重。不加这条会怎样：IMAP IDLE 重连后会重新扫 UNSEEN，
+    // 同一封会再入队一次，用户就收到重复通知。
+    if (messageId && rows.some((r) => r.messageId === messageId)) {
+      return { ok: true, queued: false, deduped: true };
+    }
+
+    if (rows.length >= NOTIFY_MAX) {
+      for (const old of rows.slice(0, rows.length - NOTIFY_MAX + 1)) {
+        try { fs.unlinkSync(path.join(notifyDir(), `${old.id}.json`)); } catch { /* ignore */ }
+      }
+    }
+
     const id = Date.now().toString(36) + randomBytes(3).toString("hex");
     fs.writeFileSync(path.join(notifyDir(), `${id}.json`), JSON.stringify({
       subject: payload.subject || "(无主题)",
       sender: payload.sender || "",
-      messageId: payload.messageId || "",
+      messageId,
       accountId: payload.accountId || "",
       queuedAt: new Date().toISOString(),
     }), "utf-8");
@@ -261,19 +303,136 @@ function queueNotification(payload) {
   }
 }
 
-/** 取走队列（AppHost 调用）。返回并清空。 */
+/**
+ * 读取队列（AppHost 调用）。**只读不删**。
+ *
+ * 删除必须等 AppHost 确认发送完成（见 /notify-ack）。
+ * 原来是读完就 unlink，而删除发生在 toast 被拉起**之前** —— 只要发送失败，
+ * 这条通知就永久消失。实测两次失败（09-20 23:15、09-21 19:06）就是这么丢的。
+ */
 function drainNotifications(limit = 10) {
-  const out = [];
-  try {
-    const dir = notifyDir();
-    const files = fs.readdirSync(dir).filter((f) => f.endsWith(".json")).sort().slice(0, limit);
-    for (const f of files) {
-      const p = path.join(dir, f);
-      try { out.push(JSON.parse(fs.readFileSync(p, "utf-8"))); } catch { /* 坏文件直接丢 */ }
-      try { fs.unlinkSync(p); } catch { /* ignore */ }
+  const all = listNotifications();
+  return { ok: true, items: all.slice(0, limit), depth: all.length };
+}
+
+/** AppHost 确认这批已经投递出去，才真正删除。 */
+function ackNotifications(ids) {
+  const dir = notifyDir();
+  let acked = 0;
+  for (const id of (Array.isArray(ids) ? ids : [])) {
+    const name = String(id);
+    // 只接受本模块自己生成的 id 形状，避免路径穿越。
+    if (!/^[\w.-]+$/.test(name)) continue;
+    try { fs.unlinkSync(path.join(dir, `${name}.json`)); acked++; } catch { /* 可能已被 TTL 清掉 */ }
+  }
+  return { ok: true, acked };
+}
+
+// ── 点击回调：管道由**服务**拥有 ──
+//
+// 为什么不能由 AppHost 那一侧建：宿主给应用子进程拼的 argv 只有
+// `--permission --allow-fs-read=<安装目录> --allow-fs-read=<app-data>
+//  --allow-fs-write=<app-data> [--allow-child-process]`，**没有 --allow-net**；
+// 而 Node 26 的权限模型把 net（含 \\.\pipe\）也一起管住。实测助手侧建管道直接报：
+//
+//   createServer: ERR_ACCESS_DENIED
+//     Access to this API has been restricted. Use --allow-net to manage permissions.
+//
+// 服务这边不一样：它是 profile local-machine + network: external，本来就在监听
+// 127.0.0.1，有 net。所以管道放这里 —— AppHost 只负责「拉起 SnoreToast 并把管道名
+// 传进去」，点击事件落回服务，服务写 notify-click.json（卡片轮询读的就是它）。
+//
+// 管道生命周期：收到事件 → 写文件 → 关；或 ARM_TTL_MS 到点自动关。
+const ARM_TTL_MS = 90 * 1000;
+const armedPipes = new Map(); // name -> { server, timer, meta }
+
+function closeArmedPipe(name) {
+  const rec = armedPipes.get(name);
+  if (!rec) return;
+  armedPipes.delete(name);
+  clearTimeout(rec.timer);
+  try { rec.server.close(); } catch { /* ignore */ }
+}
+
+/**
+ * 建一条一次性管道，等 SnoreToast 把点击事件写回来。
+ *
+ * meta（messageId / accountId）必须由调用方带上：SnoreToast 写回的内容只有
+ * `action=activate;button=;...`，不含邮件身份 —— 没有 meta 就不知道点的是哪封。
+ */
+function armClickPipe(meta) {
+  const name = `\\\\.\\pipe\\hana-mail-click-${Date.now().toString(36)}${randomBytes(3).toString("hex")}`;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (payload) => {
+      if (settled) return;
+      settled = true;
+      resolve(payload);
+    };
+
+    let server;
+    try {
+      server = net.createServer((sock) => {
+        const chunks = [];
+        // data 与 end 都会来（有些情况下收不到 end，所以 data 也处理一次），
+        // 没有这个开关会把同一封点击写两遍、日志打两行。
+        let handled = false;
+        const handle = () => {
+          if (handled) return;
+          handled = true;
+          const raw = Buffer.concat(chunks).toString("utf16le");
+          const kv = {};
+          for (const part of raw.split(";")) {
+            const i = part.indexOf("=");
+            if (i > 0) kv[part.slice(0, i)] = part.slice(i + 1);
+          }
+          if (kv.action === "activate") {
+            try {
+              fs.writeFileSync(path.join(DATA_DIR, "notify-click.json"), JSON.stringify({
+                action: kv.action,
+                messageId: meta?.messageId || "",
+                accountId: meta?.accountId || "",
+                // 汇总通知（一波 ≥3 封合并）才有这个值；单封为 0。
+                // 写进点击记录是为了让卡片能区分「点开一封」与「点开一批」。
+                summaryCount: Number(meta?.summaryCount) || 0,
+                pipe: name,
+                at: new Date().toISOString(),
+              }), "utf-8");
+              log("INFO", "通知点击已记录", {
+                messageId: meta?.messageId || "",
+                summaryCount: Number(meta?.summaryCount) || 0,
+              });
+            } catch (e) {
+              log("WARN", "通知点击写入失败", { err: e.message });
+            }
+          }
+          closeArmedPipe(name);
+        };
+        sock.on("data", (d) => {
+          chunks.push(d);
+          // 有些情况下不会收到 end（SnoreToast 写完就走），所以 data 也处理一次。
+          if (d.toString("utf16le").includes("action=")) handle();
+        });
+        sock.on("end", handle);
+        sock.on("error", () => { /* 忽略：不影响通知本身 */ });
+      });
+    } catch (e) {
+      finish({ ok: false, error: `createServer: ${e.code || ""} ${e.message}` });
+      return;
     }
-  } catch { /* ignore */ }
-  return { ok: true, items: out };
+
+    server.once("error", (e) => {
+      closeArmedPipe(name);
+      finish({ ok: false, error: `listen: ${e.code || ""} ${e.message}` });
+    });
+
+    server.listen(name, () => {
+      const timer = setTimeout(() => closeArmedPipe(name), ARM_TTL_MS);
+      if (typeof timer.unref === "function") timer.unref();
+      armedPipes.set(name, { server, timer, meta });
+      finish({ ok: true, pipe: name, ttlMs: ARM_TTL_MS });
+    });
+  });
 }
 
 // ── AgentQQ 设备码授权 ──────────────────────────────────
@@ -473,6 +632,15 @@ async function handle(req, res) {
     if (route === "/proxy") return send(res, 200, await proxyFetch(body.url));
     if (route === "/notify") return send(res, 200, queueNotification(body));
     if (route === "/pending-notify") return send(res, 200, drainNotifications(body.limit));
+    if (route === "/notify-ack") return send(res, 200, ackNotifications(body.ids));
+    if (route === "/notify-arm-pipe") {
+      // 管道名与事件回流都在这一侧（有 net）。AppHost 拿名字去拉起 SnoreToast。
+      return send(res, 200, await armClickPipe({
+        messageId: body.messageId,
+        accountId: body.accountId,
+        summaryCount: body.summaryCount,
+      }));
+    }
 
     if (route === "/agentqq/login/start") {
       sweepAuthSessions();

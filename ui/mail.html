@@ -662,6 +662,18 @@ setTimeout(function(){try{window.parent.postMessage({source:'hana-plugin',type:'
             </div>
           </div>
 
+          <!-- 系统通知：状态行 + 自检。
+               加这一段是因为通知链路的失败此前只存在于 service.log 里，
+               用户侧完全不可见（实测两次失败躺了两天没人发现）。 -->
+          <div class="llm-settings" style="margin-top:16px">
+            <div class="llm-settings-head">
+              <span>系统通知</span>
+              <button class="btn small" id="notiTestBtn">测试通知</button>
+            </div>
+            <div class="llm-status" id="notiStatus"></div>
+            <div class="llm-note" style="margin-top:0">桌面通知由应用后台进程发出，<b>不要求本卡片处于打开状态</b>。若显示「最近一次未投递」，先把鼠标移到卡片上再看，失败原因同时会写进应用日志。点击通知打开邮件需要卡片处于打开状态。</div>
+          </div>
+
           <div class="llm-settings">
             <div class="llm-settings-head">
               <span>AI 总结 / 翻译 供应商</span>
@@ -720,9 +732,31 @@ setTimeout(function(){try{window.parent.postMessage({source:'hana-plugin',type:'
 <script>
 // v2：卡片文档由宿主持有在 /api/apps/<appId>/ui/ 下，appId 直接从路径推导，
 // 不再由后端读模板注入 —— 页面因此对 App 改名 / 换安装位置都免疫。
-var APP_ID = decodeURIComponent(location.pathname.split('/')[3] || 'hanako-mail');
+// 用正则而不是 split('/')[3]：独立窗口 / 独立页面未必落在 /ui/ 这一层。
+var APP_ID = (function () {
+  var m = location.pathname.match(/\/api\/apps\/([^/]+)\//);
+  return m ? decodeURIComponent(m[1]) : 'hanako-mail';
+})();
 var API_BASE = '/api/apps/' + APP_ID + '/routes';
-var _t = new URL(location.href).searchParams.get('token');
+
+// ── 凭据 ───────────────────────────────────────────────────────────────
+// 后端自己不校验凭据；这里拼的每一项都走宿主的“应用路由代理”，由代理鉴权。
+// 宿主 SDK 里 pluginApiFetch 用的是「文档绑定的 surface session」：
+//   查询参数 appSurfaceSession（宿主注入到文档 URL） + 请求头 X-Hana-App-Surface-Session
+// 而旧写法只认 ?token= —— 独立窗口 / 独立页面里没有这个参数，
+// 于是一个凭据都带不上，代理回 403 {"error":"forbidden","reason":"missing_credential"}。
+// 两种都读：有 surface session 就优先用它（且能上请求头），同时兼容旧的内嵌卡片。
+var _qs = new URL(location.href).searchParams;
+var _surface = _qs.get('appSurfaceSession');
+var _t = _qs.get('token');
+var _credName = _surface ? 'appSurfaceSession' : (_t ? 'token' : null);
+var _credVal = _surface || _t;
+if (!_credVal) console.error('[mail] 文档 URL 上既没有 appSurfaceSession 也没有 token，路由调用会被宿主拒绝');
+
+// 给只能走 <img src>/<a href> 的地址挂凭据（那些地方带不了请求头）。
+function withCred(u) {
+  return _credVal ? u + (u.indexOf('?') >= 0 ? '&' : '?') + _credName + '=' + encodeURIComponent(_credVal) : u;
+}
 
 // 宿主会在 ui/ 路由上带 hana-theme；优先于本地保存的偏好。
 (function () {
@@ -737,8 +771,11 @@ var _t = new URL(location.href).searchParams.get('token');
 // 在 Hana dev 环境和正式版中均可用（已验证带 token 返回 HTTP 200 逐字节一致）。
 var USE_IMAGE_PROXY = true;
 function api(path, options) {
-  var u = API_BASE + path + (_t ? (path.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(_t) : '');
-  return fetch(u, { headers: { 'Content-Type': 'application/json' }, ...options });
+  var init = Object.assign({}, options);
+  // 合并而不是覆盖：原来只要 options.headers 存在，Content-Type 会被整个顶掉。
+  init.headers = Object.assign({ 'Content-Type': 'application/json' }, (options && options.headers) || {});
+  if (_surface) init.headers['X-Hana-App-Surface-Session'] = _surface;
+  return fetch(withCred(API_BASE + path), init);
 }
 
 function currentTheme() {
@@ -821,6 +858,8 @@ function checkNewMessages(msgs, accountId, folderId) {
     showNotification(latest.subject, latest.from, latest.id, accountId);
     // 桌面原生通知
     fetchNotifyDesktop(latest.subject, latest.from, latest.id, accountId);
+    // 通知已入队 → 打开「点击可能到来」的快轮询窗口（见 startClickPoll）
+    noteClickWindow();
     // v0.1.6：正在查看该文件夹的列表时，自动刷新让新邮件直接出现（无需手动刷新）
     var listPage = document.getElementById('page-list');
     if (listPage && listPage.classList.contains('active') && state.accountId === accountId && (state.folderId || 'INBOX') === folderId) {
@@ -836,24 +875,106 @@ function fetchNotifyDesktop(subject, from, msgId, accountId) {
   }).catch(function () { /* silent */ });
 }
 
-// 轮询桌面通知点击事件
+// 轮询桌面通知点击事件。
+//
+// 密度自适应：1 秒只在「通知刚发出的那两分钟」里才有意义 ——
+// 那时你才可能去点它。平时点无可点，拉到 15 秒。
+// 原实现恒定 1 秒 = 卡片开着时每小时 3600 次请求；
+// 现在空闲时约每小时 240 次，而通知后仍是秒级响应。
 var _clickPollTimer = null;
+var _clickPollOn = false;
+var _CLICK_FAST_MS = 1000;
+var _CLICK_SLOW_MS = 15000;
+var _CLICK_FAST_WINDOW_MS = 2 * 60 * 1000;
+var _CLICK_EXPIRE_MS = 10 * 60 * 1000;
+var _clickWindowAt = 0; // 最近一次「通知已发出、点击可能到来」的时刻
+
+// 通知入队时调用：打开快轮询窗口
+function noteClickWindow() { _clickWindowAt = Date.now(); }
+
 function startClickPoll() {
-  if (_clickPollTimer) clearInterval(_clickPollTimer);
-  _clickPollTimer = setInterval(async function () {
-    try {
-      var resp = await api('/clicks/latest');
-      if (!resp.ok) return;
+  stopClickPoll();
+  _clickPollOn = true;
+  clickPollTick(); // 立刻查一次：卡片没开时攒下的点击，打开就能跳
+}
+async function clickPollTick() {
+  if (!_clickPollOn) return;
+  try {
+    var resp = await api('/clicks/latest');
+    if (resp.ok) {
       var d = await resp.json();
       if (d && d.ok && d.data && d.data.messageId) {
-        openDetail(d.data.messageId, d.data.accountId || state.accountId, state.folderId || 'INBOX');
+        // 丢掉过期的点击：卡片没开时点击会一直躺在 app-data 里，
+        // 隔夜打开卡片不该突然跳到一封旧信上。
+        var at = d.data.at ? Date.parse(d.data.at) : 0;
+        if (!at || Date.now() - at <= _CLICK_EXPIRE_MS) {
+          openDetail(d.data.messageId, d.data.accountId || state.accountId, state.folderId || 'INBOX');
+        }
       }
-    } catch (e) { /* silent */ }
-  }, 1000);
+    }
+  } catch (e) { /* silent */ }
+  if (!_clickPollOn) return;
+  var fast = Date.now() - _clickWindowAt < _CLICK_FAST_WINDOW_MS;
+  _clickPollTimer = setTimeout(clickPollTick, fast ? _CLICK_FAST_MS : _CLICK_SLOW_MS);
 }
 function stopClickPoll() {
-  if (_clickPollTimer) { clearInterval(_clickPollTimer); _clickPollTimer = null; }
+  _clickPollOn = false;
+  if (_clickPollTimer) { clearTimeout(_clickPollTimer); _clickPollTimer = null; }
 }
+
+/* ── 系统通知：状态显示与自检 ── */
+var _notiStatusTimer = null;
+function renderNotiStatus(d) {
+  var el = document.getElementById('notiStatus');
+  if (!el) return;
+  if (!d) { el.className = 'llm-status'; el.textContent = '状态未知'; return; }
+  if (!d.drainRunning) {
+    el.className = 'llm-status err';
+    el.textContent = '通知派发未运行（应用需重新加载）';
+    return;
+  }
+  var parts = [];
+  parts.push('派发中（每 ' + Math.round((d.intervalMs || 5000) / 1000) + ' 秒一轮）');
+  parts.push('队列 ' + (d.queueDepth === null || d.queueDepth === undefined ? '?' : d.queueDepth) + ' 条');
+  if (d.lastAttemptAt) {
+    parts.push((d.lastAttempted ? '最近一次已投递' : '最近一次未投递')
+      + '（' + (d.lastMethod || '?') + ' · ' + new Date(d.lastAttemptAt).toLocaleTimeString() + '）');
+    // 刚投递过 → 你可能正要去点它，打开快轮询窗口
+    var lastAt = Date.parse(d.lastAttemptAt);
+    if (lastAt && Date.now() - lastAt < _CLICK_FAST_WINDOW_MS) noteClickWindow();
+  } else {
+    parts.push('还没有投递记录');
+  }
+  if (d.lastFailed) parts.push('上轮失败 ' + d.lastFailed + ' 条');
+  parts.push(d.lastClickArmed ? '点击可跳转' : '点击不可跳转');
+  if (!d.lastClickArmed && d.lastClickError) parts.push('原因：' + d.lastClickError);
+  if (!d.serviceReady) parts.push('后端服务未就绪');
+  if (d.serviceProfile && d.serviceProfile !== 'native') parts.push('运行 profile：' + d.serviceProfile);
+  el.className = 'llm-status' + (d.lastAttemptAt && !d.lastAttempted ? ' err' : '');
+  el.textContent = parts.join(' · ');
+}
+function refreshNotiStatus() {
+  api('/notify-status').then(function (r) { return r.json(); }).then(function (d) {
+    if (d && d.ok) renderNotiStatus(d.data);
+  }).catch(function () { /* silent */ });
+}
+function startNotiStatus() {
+  if (_notiStatusTimer) return;
+  refreshNotiStatus();
+  _notiStatusTimer = setInterval(refreshNotiStatus, 60000);
+}
+(function () {
+  var btn = document.getElementById('notiTestBtn');
+  if (!btn) return;
+  btn.onclick = function () {
+    btn.disabled = true;
+    function done(msg) { toast(msg); btn.disabled = false; refreshNotiStatus(); }
+    api('/notify-test', { method: 'POST' }).then(function (r) { return r.json(); }).then(function (d) {
+      var ok = d && d.ok && d.data && d.data.attempted;
+      done(ok ? '测试通知已发出' : ('测试通知未发出：' + (d && d.data && d.data.error ? d.data.error : '未知原因')));
+    }).catch(function () { done('测试通知请求异常'); });
+  };
+})();
 async function pollNewMessages() {
   try {
     if (!state.accountId) return;
@@ -884,13 +1005,12 @@ function joinAddrs(a) {
   return String(a);
 }
 
-// 构建附件下载/预览地址（与 api() 一致，自动带上 token）
+// 构建附件下载/预览地址（与 api() 一致，自动带上凭据）
 function attachmentUrl(messageId, partId, download) {
   var p = '/attachments/' + encodeURIComponent(messageId) + '/' + encodeURIComponent(partId) +
     '?accountId=' + encodeURIComponent(state.accountId || '') +
-    (download ? '&download=1' : '') +
-    (_t ? '&token=' + encodeURIComponent(_t) : '');
-  return API_BASE + p;
+    (download ? '&download=1' : '');
+  return withCred(API_BASE + p);
 }
 
 function humanSize(bytes) {
@@ -1005,10 +1125,9 @@ function rewriteImages(html, atts, messageId) {
   return html;
 }
 
-// 构建图片代理 URL（与 api() 一致，自动带上 token）
+// 构建图片代理 URL（与 api() 一致，自动带上凭据）
 function proxyUrl(externalUrl) {
-  return API_BASE + '/image-proxy?url=' + encodeURIComponent(externalUrl) +
-    (_t ? '&token=' + encodeURIComponent(_t) : '');
+  return withCred(API_BASE + '/image-proxy?url=' + encodeURIComponent(externalUrl));
 }
 
 /* ── 全局状态 ── */
@@ -1023,7 +1142,14 @@ var DEFAULT_FOLDERS = [
 
 /* ── 账号 ── */
 function loadAccounts() {
-  return api('/accounts').then(function (r) { return r.json(); }).then(function (d) {
+  return api('/accounts').then(function (r) {
+    // 401/403 时响应体不是我们要的形状，d.data 为 undefined，
+    // 旧代码会把它当成“没有账号”——把“拿不到”误报成“没有”，
+    // 而这两种情况要采取的行动完全不同（一个是刷新窗口，一个是去添加账号）。
+    if (!r.ok) return r.text().then(function (t) { throw new Error('HTTP ' + r.status + ' ' + String(t || '').slice(0, 120)); });
+    return r.json();
+  }).then(function (d) {
+    if (!d || d.ok === false) throw new Error((d && d.error) || '响应格式异常');
     state.accounts = d.data || [];
     var el = document.getElementById('acctList');
     if (!state.accounts.length) {
@@ -1047,7 +1173,32 @@ function loadAccounts() {
         '</button>';
     }).join('');
     if (!state.accountId) selectAccount(state.accounts[0].id);
-  }).catch(function () { toast('加载账号失败'); });
+  }).catch(function (e) {
+    // 不要静默地显示“暂无账号”：
+    // 卡片持有的是宿主注入的 ?token=，它会在应用重装/重新注册后失效，
+    // 那时接口返回 401，而旧代码把它渲染成“暂无账号”——看起来像账号丢了。
+    var msg = (e && e.message) || String(e);
+    // 把“凭据到底有没有”写进错误里：
+    // 否则每一次失败都要重新猜是“凭据不对”还是“这个窗口压根没注入凭据”。
+    var diag = 'URL 参数 [' + Array.from(_qs.keys()).join(', ') + '] · 凭据 ' + (_credName || '无');
+    var el2 = document.getElementById('acctList');
+    if (el2) {
+      el2.innerHTML = '<div class="empty" style="padding:14px 8px">账号加载失败：' + esc(msg) +
+        '<br><span style="color:var(--text-muted)">' + esc(diag) + '</span>' +
+        '<br><span style="color:var(--text-muted)">若刚重装过应用、或刚换过窗口形态，请关闭本窗口后重新打开</span></div>';
+    }
+    var fl = document.getElementById('folderList');
+    if (fl) fl.innerHTML = '<div class="empty" style="padding:14px 8px">账号加载失败</div>';
+    varset('metricAccounts', '!');
+    varset('metricUnread', '-');
+    varset('metricSynced', '-');
+    toast('加载账号失败');
+  });
+}
+
+function varset(id, v) {
+  var el = document.getElementById(id);
+  if (el) el.textContent = v;
 }
 
 function selectAccount(id) {
@@ -2101,6 +2252,7 @@ function showLlmStatus(type, msg) {
 /* 启动 */
 loadAccounts();
 setTimeout(startPolling, 1000); // 等账号加载完开始轮询新邮件
+startNotiStatus();              // 通知链路状态（10 秒一轮）
 // 自动检测 Hanako LLM 配置（无需用户填写 URL / Key）
 setTimeout(function () {
   if (!getLlmConfig() || !getLlmConfig().agentId) detectLlm();
