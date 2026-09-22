@@ -33,6 +33,7 @@ import net from "node:net";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomBytes } from "node:crypto";
 import { startDeviceFlow, waitForAuthorization } from "../backend/agentqq-auth.mjs";
+import { spawnSync } from "node:child_process";
 import { decryptSensitiveFields, encryptSensitiveFields } from "../backend/cred-crypto.mjs";
 // 依赖判定只有一份（从 backend/package.json 推导），与 AppHost 侧（http/ui.js）共用
 import { missingBackendDeps } from "../backend/deps.mjs";
@@ -79,6 +80,42 @@ function log(level, msg, data) {
 // 起因：那边曾有两份硬编码清单，0.6.0 换依赖时没同步，把 QQ 邮箱的同步整条挡住了。
 function checkDeps() {
   return missingBackendDeps(BACKEND_DIR);
+}
+
+/**
+ * ★ 一次性探针：受管服务到底能不能 spawn？
+ *
+ * 仓库里对此有两句**互相否定**的话：
+ *   · 本文件与 clawemail-backend / notify-drain / imap-idle / ws-monitor / agentqq-* 等 7 处写着
+ *     「受管 native 服务不能 spawn（Job Object，实测 spawn EPERM）」——
+ *     通知为什么分两半、图片代理为什么改进程内、mail-cli 为什么被替掉，都是围绕这句建的；
+ *   · scripts/restore-backend-deps.mjs（2026-09-20）说服务「有能力 spawn + 出网」。
+ *
+ * 可疑之处：那句 EPERM 是在服务还跑在 **native** profile 时测的；
+ * 而现在 native 永远建不起来（HANA_HOME 是符号链接），服务实际一直跑在降级后的
+ * local-machine（enforcement: none，无沙箱）—— 当初那个限制可能已经不在了。
+ *
+ * 结论决定两件实事：依赖是否必须随包发布、通知为何要分两半。
+ * 所以启动时真跑一次，把结果写进 service.log —— 不再靠注释互相说服。
+ */
+function probeSpawn() {
+  const t0 = Date.now();
+  let out;
+  try {
+    const r = spawnSync(process.execPath, ["-v"], { encoding: "utf-8", timeout: 10000, windowsHide: true });
+    const ok = !r.error && r.status === 0;
+    out = {
+      canSpawn: ok,
+      status: r.status,
+      stdout: String(r.stdout || "").trim(),
+      error: r.error ? { code: r.error.code, message: r.error.message } : null,
+      ms: Date.now() - t0,
+    };
+  } catch (e) {
+    out = { canSpawn: false, error: { code: e.code, message: e.message }, ms: Date.now() - t0 };
+  }
+  log(out.canSpawn ? "INFO" : "WARN", "spawn 能力探针", out);
+  return out.canSpawn;
 }
 
 function reportDeps() {
@@ -702,6 +739,8 @@ async function main() {
   // 依赖检查不再阻塞就绪：缺失时 /cli 会报错，但服务本身要起来，
   // 这样 /health 与其它端点仍可用（也便于诊断）。
   reportDeps();
+  // 启动时真测一次 spawn 能力（结论落在 service.log），见上面 probeSpawn 的注释。
+  probeSpawn();
   startListeners().catch((e) => log("ERROR", "监听启动失败", { error: e.message }));
 
   await loadBackend();

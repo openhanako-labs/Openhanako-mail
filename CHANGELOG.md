@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.6.8] — 2026-09-22
+
+### 新增：启动时实探一次「受管服务能不能 spawn」
+
+仓库里对这个前提有两句**互相否定**的话：
+
+- `runtime/service.mjs` / `clawemail-backend` / `notify-drain` / `imap-idle` /
+  `ws-monitor` / `agentqq-auth` / `agentqq-backend` 共 7 处写着：
+  「受管 native 服务不能 spawn（Job Object，**实测** spawn EPERM）」。
+  **通知为什么分两半、图片代理为什么改进程内、mail-cli 为什么被替掉，都是围绕这句建的。**
+- `scripts/restore-backend-deps.mjs`（2026-09-20）却说服务「**有能力 spawn + 出网**」。
+
+可疑之处：那句 EPERM 是在服务还跑在 **native** profile 时测的；
+而现在 native 永远建不起来（`HANA_HOME` 是符号链接），服务实际一直跑在降级后的
+`local-machine`（`enforcement: none`，无沙箱）—— 当初那个限制可能已经不在了。
+两边都没在“降级成为常态”之后重测过。
+
+结论决定两件实事：
+
+1. 服务能不能自己 `npm install` —— 即更新 App 把 `backend/node_modules` 清掉后能不能自愈；
+   若不能，唯一的恢复路径是让用户在自己的终端手动跑 `restore-backend-deps.mjs`。
+2. 通知那套「服务排队 + AppHost 派发」的分割是否还有必要。
+
+做法：启动时 `spawnSync(process.execPath, ["-v"])` 真跑一次，结果写入 `service.log` 的
+`spawn 能力探针` 一行——不再靠注释互相说服。选启动时而不是加 HTTP 端点：
+回环服务本来就没鉴权，不再多一个能被本机进程触发的动作。
+
 ## [0.6.7] — 2026-09-22
 
 ### 修复：降级到无沙箱 profile 的提示永远不显示（上游遗留的一行）
