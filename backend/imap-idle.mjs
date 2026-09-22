@@ -2,24 +2,35 @@
  * imap-idle.mjs — IMAP 实时收件监听器（RFC 2177 IDLE）
  *
  * 功能：为每个个人邮箱（IMAP 后端）账号建立 IDLE 长连接，服务器有新邮件时
- * 主动推送（node-imap 触发 'mail' 事件），插件立即：
+ * 主动推送（imapflow 触发 'exists' 事件），插件立即：
  *   1) 拉取最新未读邮件（解析 subject/from）
  *   2) 写入 plugin-data 缓存（cache/ws-<accountId>-<mailId>.json，与 ws-monitor 同格式，
  *      前端 / 工具列表自动合并）
- *   3) 弹系统级桌面通知（helper/mail-toast.cjs，与 ws-monitor 同链路）
+ *   3) 弹系统级桌面通知（写 _pending_notify 队列，由 AppHost 派发）
  *
- * 断线自动重连（指数退避）；服务器不支持 IDLE 时自动降级为周期性检查。
+ * 断线自动重连；服务器不支持 IDLE 时自动降级为周期性检查。
  * 由 index.js 启动/关停；cleanup.cjs 兜底清理。
+ *
+ * ── 2026-09-22：协议层从 `imap`（node-imap）迁到 `imapflow` ──
+ * 业务部分（去重集、写缓存、入队通知、重连、常驻守护）原样保留，只换了协议那一半。
+ *
+ * ★★ 这个监听器用的是**独立的一条连接**，不走 imapflow-client.mjs 的命令连接池。
+ *    原因见 05-IMAP层-imapflow迁移设计.md 第六节：IDLE 要长期占着连接，
+ *    而 imapflow 的锁是独占语义。两者共用一条连接会变成
+ *    「新邮件通知照弹，但点开列表一直转圈」——一半能用一半不能用，
+ *    而且症状会把人引向网络或邮件服务器，而不是引向锁。
  */
 
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
+import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
-import { getImapConfig, connectImap, openBox } from "./imap-backend.mjs";
 import { setCryptoDataDir, decryptSensitiveFields } from "./cred-crypto.mjs";
 import { runtimeDataDir } from "../lib/env.mjs";
+import { appendRolling } from "./log-roll.mjs";
+import { getImapConfig } from "./imap-config.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -30,13 +41,14 @@ const DATA_DIR = runtimeDataDir();
 const LOG_PATH = path.join(DATA_DIR, "imap-idle.log");
 const POLL_FALLBACK_MS = 2 * 60 * 1000; // 不支持 IDLE 时降级轮询间隔
 const MAX_FETCH_PER_EVENT = 5;          // 单次事件最多拉取/通知的邮件数
+const RECONNECT_MS = 30000;             // 断线重连间隔（与迁移前一致）
 
 function log(level, msg, data) {
   const ts = new Date().toISOString();
   // `data !== undefined`：v1 里写成 `data ?`，于是「账号数量 0」被打成空白 ——
   // 恰恰把关键信息遮住了。
   const line = data !== undefined ? `[${ts}] [${level}] ${msg} ${JSON.stringify(data)}` : `[${ts}] [${level}] ${msg}`;
-  try { fs.appendFileSync(LOG_PATH, line + "\n"); } catch {}
+  appendRolling(LOG_PATH, line);
   process.stderr.write(line + "\n");
 }
 
@@ -89,30 +101,20 @@ function notifyDesktop(subject, sender, messageId, accountId) {
   }
 }
 
-// ── 从 IDLE 连接拉取并解析最新未读邮件 ──
-async function fetchNewMails(imap, limit = MAX_FETCH_PER_EVENT) {
-  const uids = await new Promise((resolve, reject) => {
-    imap.search(["UNSEEN"], (err, results) => (err ? reject(err) : resolve(results || [])));
-  });
-  const recent = uids.slice(Math.max(0, uids.length - limit));
+// ── 从监听连接拉取并解析最新未读邮件 ──
+async function fetchNewMails(client, limit = MAX_FETCH_PER_EVENT) {
+  // ★ { uid: true }：imapflow 的 search **默认返回序号**，不是 UID
+  //（SearchOptions.uid 的注释：「If true then returns UID numbers instead of
+  //  sequence numbers」）。不加这个选项，拿序号当 UID 取信会一封都取不到 ——
+  // 而这个错误在「新建、无删除、序号恰好等于 UID」的收件箱上看不出来。
+  const uids = await client.search({ seen: false }, { uid: true });
+  const recent = (Array.isArray(uids) ? uids : []).slice(-limit);
   if (!recent.length) return [];
-  const rawMessages = await new Promise((resolve, reject) => {
-    const f = imap.fetch(recent, { bodies: "" });
-    const messages = [];
-    f.on("message", (msg) => {
-      const buffers = [];
-      msg.on("body", (stream) => {
-        stream.on("data", (chunk) => buffers.push(chunk));
-        stream.on("end", () => messages.push({ uid: msg.uid, raw: Buffer.concat(buffers) }));
-      });
-    });
-    f.once("error", reject);
-    f.once("end", () => resolve(messages));
-  });
+
   const parsed = [];
-  for (const m of rawMessages) {
+  for await (const m of client.fetch(recent, { source: true, uid: true }, { uid: true })) {
     try {
-      const p = await simpleParser(m.raw);
+      const p = await simpleParser(m.source);
       parsed.push({
         id: String(m.uid),
         uid: m.uid,
@@ -141,22 +143,23 @@ async function watchAccount(account) {
   const cfg = account.config || {};
   const processed = loadProcessed(accountId);
 
-  // 凭据注入 process.env 后复用 imap-backend 的配置解析（含域名推断）
+  // 凭据注入 process.env 后复用共享的配置解析（含域名推断）
   const prevEnv = {};
   const setEnv = (k, v) => { prevEnv[k] = process.env[k]; if (v !== undefined && v !== null) process.env[k] = String(v); };
   setEnv("IMAP_HOST", cfg.imapHost); setEnv("IMAP_PORT", cfg.imapPort);
   setEnv("IMAP_USER", cfg.imapUser); setEnv("IMAP_PASS", cfg.imapPass);
 
-  let imap = null;
+  let client = null;
   let closed = false;
   let reconnectTimer = null;
   let fallbackTimer = null;
+
   const cleanup = () => { for (const k of Object.keys(prevEnv)) { if (prevEnv[k] === undefined) delete process.env[k]; else process.env[k] = prevEnv[k]; } };
 
   const onNewMail = async () => {
-    if (closed) return;
+    if (closed || !client || !client.usable) return;
     try {
-      const mails = await fetchNewMails(imap);
+      const mails = await fetchNewMails(client);
       for (const mail of mails) {
         if (processed.has(mail.id)) continue;
         // 跳过自己发出的邮件
@@ -178,52 +181,85 @@ async function watchAccount(account) {
     }
   };
 
-  const connect = async () => {
-    if (closed) return;
-    try {
-      const config = getImapConfig(email);
-      if (!config.host) { log("WARN", "缺少 IMAP 主机配置，跳过", { email }); return; }
-      imap = await connectImap(config);
-      await openBox(imap, "INBOX", true);
-      log("INFO", "已连接并进入监听", { email });
-
-      imap.on("mail", () => onNewMail());
-      imap.on("update", () => { /* flags 变化，忽略 */ });
-      imap.on("error", (err) => {
-        log("WARN", "连接错误，准备重连", { email, err: err.message });
-        imapEnd();
-      });
-      imap.on("close", () => {
-        log("WARN", "连接关闭，准备重连", { email });
-        imapEnd();
-      });
-
-      // 兜底：周期检查（服务器不支持 IDLE 或事件偶发丢失时，仍能收到新邮件）
-      if (fallbackTimer) clearInterval(fallbackTimer);
-      fallbackTimer = setInterval(() => {
-        if (closed || !imap || imap.state === "disconnected") return;
-        onNewMail();
-      }, POLL_FALLBACK_MS);
-    } catch (e) {
-      log("WARN", "连接失败", { email, err: e.message });
-      imapEnd();
+  // IDLE：imapflow 的 idle() 在服务器结束 IDLE（超时 / 有新邮件）时 resolve，
+  // 返回 `false` 表示服务器不支持 IDLE → 交给 2 分钟轮询兜底。
+  const idleLoop = async (c) => {
+    while (!closed && client === c && c.usable) {
+      let supported;
+      try {
+        supported = await c.idle();
+      } catch (e) {
+        log("WARN", "IDLE 异常，准备重连", { email, err: e.message });
+        imapEnd(c);
+        return;
+      }
+      if (supported === false) {
+        log("INFO", "服务器不支持 IDLE，降级为周期轮询", { email });
+        return;
+      }
+      if (closed || client !== c) return;
+      // IDLE 结束（多半是来了新邮件）→ 补扫一次：
+      // 事件只告诉我们「变了」，不保证在事件窗口内一定抓到那一封。
+      await onNewMail();
     }
   };
 
-  const imapEnd = () => {
+  const connect = async () => {
     if (closed) return;
-    try { if (imap) imap.end(); } catch {}
-    imap = null;
+    let next = null;
+    try {
+      const config = getImapConfig(email);
+      if (!config.host) { log("WARN", "缺少 IMAP 主机配置，跳过", { email }); return; }
+
+      next = new ImapFlow({
+        host: config.host,
+        port: config.port,
+        secure: config.tls !== false,
+        auth: { user: config.user, pass: config.password },
+        logger: false,
+      });
+      // ★ 必须挂 error 监听。imapflow 是 EventEmitter，未处理的 'error'
+      //   会按 Node 语义直接打崩整个服务进程（node-imap 那条路径已经中过一次）。
+      next.on("error", (err) => log("WARN", "连接错误", { email, err: err.message }));
+
+      await next.connect();
+      await next.mailboxOpen("INBOX", { readOnly: true });
+      if (closed) { try { next.close(); } catch {} return; }
+
+      client = next;
+      log("INFO", "已连接并进入监听", { email });
+
+      // 身份判断，避免旧连接的事件打扰新连接
+      next.on("exists", () => { if (client === next) onNewMail(); });
+      next.on("close", () => { if (client === next) { log("WARN", "连接关闭，准备重连", { email }); imapEnd(next); } });
+
+      // 兜底：周期检查（服务器不支持 IDLE 或事件偶发丢失时，仍能收到新邮件）
+      if (fallbackTimer) clearInterval(fallbackTimer);
+      fallbackTimer = setInterval(() => { onNewMail(); }, POLL_FALLBACK_MS);
+
+      idleLoop(next);
+    } catch (e) {
+      log("WARN", "连接失败", { email, err: e.message });
+      try { if (next) next.close(); } catch {}
+      imapEnd(next);
+    }
+  };
+
+  const imapEnd = (which) => {
+    if (closed) return;
+    if (which && client !== which) return; // 旧连接的收尾，忽略
+    try { if (client) client.close(); } catch {}
+    client = null;
     if (fallbackTimer) { clearInterval(fallbackTimer); fallbackTimer = null; }
     cleanup();
     if (reconnectTimer) clearTimeout(reconnectTimer);
-    reconnectTimer = setTimeout(() => { if (!closed) connect(); }, 30000);
+    reconnectTimer = setTimeout(() => { if (!closed) connect(); }, RECONNECT_MS);
   };
 
   connect();
 
-  // 返回停止函数（进程退出时由 shutdown 统一处理，这里仅做标记）
-  return () => { closed = true; if (reconnectTimer) clearTimeout(reconnectTimer); if (fallbackTimer) clearInterval(fallbackTimer); try { if (imap) imap.end(); } catch {} cleanup(); };
+  // 返回停止函数（进程退出时由 stopAll 统一处理，这里仅做标记）
+  return () => { closed = true; if (reconnectTimer) clearTimeout(reconnectTimer); if (fallbackTimer) clearInterval(fallbackTimer); try { if (client) client.close(); } catch {} cleanup(); };
 }
 
 // ── 启动全部 IMAP 账号（可重复调用：只补启动新增账号，不重复连接已有） ──

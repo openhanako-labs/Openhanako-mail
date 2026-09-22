@@ -168,6 +168,10 @@ const rtHost = fs.readFileSync(path.join(ROOT, "lib", "runtime-host.mjs"), "utf-
 check("manifest 声明了 app/runtime.execute", caps.includes("app/runtime.execute"));
 check("manifest 声明了 app/runtime.native", caps.includes("app/runtime.native"));
 check("manifest 声明了 app/runtime.network", caps.includes("app/runtime.network"));
+// native 沙箱身份在部分机器上永远建不起来（HANA_HOME 上有符号链接/重解析点），
+// 这条降级要能在 manifest 里被授权，否则就是「降级也降不下来」——邮件功能整个不可用。
+check("manifest 声明了 app/runtime.local-machine（native 降级路径要用）",
+  caps.includes("app/runtime.local-machine"));
 check("manifest 声明了 app/process.spawn（AppHost 要用它发桌面通知）", caps.includes("app/process.spawn"));
 
 // 核心不变量：**服务侧（backend/*.mjs）不许有任何 spawn/execFile**。
@@ -188,12 +192,31 @@ check("服务侧（backend/*.mjs）无 spawn/execFile", (() => {
 })());
 
 // 通知派发必须在 AppHost 侧（那里有 --allow-child-process）
+//
+// 注意：下面两条只验**形状**（文件在不在、源码里有没有这个字符串），不验行为。
+// 历史上正是这个缺口让两个真 bug 躺了两天（队列「取走即删」、靠 SnoreToast
+// 退出码判送达）。**行为**由 `scripts/smoke-notify.mjs` 负责，跑完本文件请一并跑它。
 check("通知派发在 AppHost 侧（lib/notify-drain.mjs）", fs.existsSync(path.join(ROOT, "lib", "notify-drain.mjs")));
 check("服务不自己发通知，而是入队", fs.readFileSync(path.join(ROOT, "runtime", "service.mjs"), "utf-8").includes("_pending_notify"));
 check("profile 降级链首位是 native（优先有沙箱）", rtHost.includes('const RUNTIME_PROFILES = ["native"'));
 check("profile 降级链含 local-machine（native 沙箱身份失败时的退路）", rtHost.includes('RUNTIME_PROFILES = ["native", "local-machine"]'));
 check("manifest 声明了 app/runtime.local-machine", caps.includes("app/runtime.local-machine"));
 check("仅沙箱身份类错误才触发降级", rtHost.includes("function shouldFallThrough"));
+// 派发器必须**无条件**启动。它本身就是「服务不可用时的探针」，
+// 而 runtime-host 的惰性自愈只等「第一次真调用」—— 唯一会周期性发起真调用的
+// 消费者就是它。挂在 if (ready) 里等于让两条路互相等（实测踩过：服务起不来的那次，
+// 通知也一起没了）。这里用源码位置断言，比“文件存在”强一点。
+{
+  const indexSrc = fs.readFileSync(path.join(ROOT, "index.js"), "utf-8");
+  const drainAt = indexSrc.indexOf("startNotificationDrain(log)");
+  const readyAt = indexSrc.indexOf("if (ready)");
+  check("通知派发不挂在服务就绪分支里（startNotificationDrain 在 if (ready) 之前）",
+    drainAt > -1 && readyAt > -1 && drainAt < readyAt,
+    `drainAt=${drainAt} readyAt=${readyAt}`);
+}
+check("通知队列是「确认后删」而不是「取走即删」",
+  fs.readFileSync(path.join(ROOT, "runtime", "service.mjs"), "utf-8").includes("ackNotifications")
+  && fs.existsSync(path.join(ROOT, "scripts", "smoke-notify.mjs")));
 check("network: external 与 manifest 一致", rtHost.includes('network: "external"'));
 check("readyMarker 与服务端一致",
   rtHost.includes("HANA_MAIL_SERVICE_READY")
@@ -222,6 +245,152 @@ for (const [i, card] of (manifest.contributes?.cards || []).entries()) {
   const img = card.face && typeof card.face === "object" ? card.face.image : undefined;
   const prob = typeof img === "string" ? faceProblem(img) : "face.image must be a string";
   check(`卡片 "${card.id}" 的 face 声明合法`, prob === null, prob || String(img));
+}
+
+// ── 7. 日志滚动与缓存清理（2026-09-22：实测两处无上限增长） ──
+// 起因：ws-monitor.log 12 天长到 710 KB 而**没有任何滚动**；cache/ws-*.json 63 个
+// 1.65 MB 而**没有任何清理机制**。这里既验「改对了」，也验「真的会滚动」——
+// 前者是形状，后者是行为，只验形状就是之前让两个真 bug 躺两天的那个缺口。
+{
+  const { appendRolling, LOG_MAX_CHARS } = await load("backend/log-roll.mjs");
+  const probe = path.join(home, "roll-probe.log");
+  for (let i = 0; i < 4000; i++) appendRolling(probe, "x".repeat(40), 4096, 2048);
+  const probeSize = fs.statSync(probe).size;
+  // 4000 行 × 41 字符 ≈ 164 KB，滚动后必须只剩末尾一小截
+  check("appendRolling 真的滚动（写 4000 行后文件仍很小）", probeSize <= 4096 + 64, `实际 ${probeSize} B`);
+  check("appendRolling 保留的是末尾内容",
+    fs.readFileSync(probe, "utf-8").trimEnd().endsWith("x".repeat(40)));
+  check("LOG_MAX_CHARS 是有限值", Number.isFinite(LOG_MAX_CHARS) && LOG_MAX_CHARS > 1024, String(LOG_MAX_CHARS));
+
+  const wsSrc2 = fs.readFileSync(path.join(ROOT, "backend", "ws-monitor.mjs"), "utf-8");
+  const idleSrc2 = fs.readFileSync(path.join(ROOT, "backend", "imap-idle.mjs"), "utf-8");
+  const rawAppend = (src) => /\bfs\.appendFileSync\s*\(\s*LOG_PATH/.test(src);
+  check("ws-monitor 不再裸 appendFileSync 到日志", !rawAppend(wsSrc2));
+  check("imap-idle 不再裸 appendFileSync 到日志", !rawAppend(idleSrc2));
+  check("ws-monitor 走 appendRolling", wsSrc2.includes("appendRolling(LOG_PATH"));
+  check("imap-idle 走 appendRolling", idleSrc2.includes("appendRolling(LOG_PATH"));
+  check("ws-monitor 缓存清理是数量上限（不设时间上限）",
+    wsSrc2.includes("pruneWsCache") && wsSrc2.includes("WS_CACHE_MAX_FILES"));
+  check("★ 缓存清理没有时间上限（那会删掉列表里的旧邮件）",
+    !wsSrc2.includes("WS_CACHE_MAX_AGE_MS") && !/tooOld/.test(wsSrc2));
+  check("startAll 启动时清理一次缓存", /startAll\(\)[\s\S]{0,260}pruneWsCache\(\)/.test(wsSrc2));
+  check("saveMail 每若干封也清理一次（长期不收信不重启也不涨）", /_savesSincePrune\s*\+\+/.test(wsSrc2));
+
+  // 只按数量淘汰，**故意不设时间上限**。这里除了验行为，还要验「存量不会被误删」——
+  // 实测 2026-09-22 时 cache/ 里有 62 个，最老的来自 7 月；早先写成「14 天」时
+  // 会删掉其中 54 个，而它们是列表里旧邮件在本地唯一的痕迹。
+  const { pruneWsCache } = await load("backend/ws-monitor.mjs");
+  const cacheDir = path.join(appDataDir, "cache");
+  const WS_MAX_FILES = 500;
+  const wipeCache = () => {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+    fs.mkdirSync(cacheDir, { recursive: true });
+  };
+  const touch = (name, atMs) => {
+    const p = path.join(cacheDir, name);
+    fs.writeFileSync(p, "{}");
+    fs.utimesSync(p, new Date(atMs), new Date(atMs));
+    return p;
+  };
+  const wsLeft = () => fs.readdirSync(cacheDir).filter((n) => n.startsWith("ws-"));
+  const nowMs = Date.now();
+
+  // A. 存量在限额内 → 一个都不删（包括跨越数月的旧文件）
+  wipeCache();
+  const QUARTER = 90 * 24 * 60 * 60 * 1000;
+  for (let i = 0; i < 40; i++) touch(`ws-a-old${String(i).padStart(3, "0")}.json`, nowMs - QUARTER - i * 1000);
+  for (let i = 0; i < 22; i++) touch(`ws-a-new${String(i).padStart(3, "0")}.json`, nowMs - i * 1000);
+  const resA = pruneWsCache();
+  check("pruneWsCache 限额内一个不删（老文件也留）",
+    resA.removed === 0 && wsLeft().length === 62, JSON.stringify(resA));
+
+  // B. 超过数量上限 → 收敛到上限，删的是最旧的
+  wipeCache();
+  for (let i = 0; i < WS_MAX_FILES + 17; i++) touch(`ws-b-${String(i).padStart(4, "0")}.json`, nowMs - i * 1000);
+  const resB = pruneWsCache();
+  check("pruneWsCache 超限后收敛到上限", wsLeft().length === WS_MAX_FILES, `剩 ${wsLeft().length}`);
+  check("pruneWsCache 删的是最旧的",
+    wsLeft().includes("ws-b-0000.json") && !wsLeft().includes(`ws-b-0${WS_MAX_FILES + 16}.json`), "");
+  check("pruneWsCache 报告删除数", resB.removed === 17, JSON.stringify(resB));
+
+  // C. 没有时间上限：极旧的文件在限额内同样不动
+  wipeCache();
+  touch("ws-c-ancient.json", nowMs - 400 * 24 * 60 * 60 * 1000);
+  pruneWsCache();
+  check("pruneWsCache 没有时间上限（400 天前的文件也不删）",
+    wsLeft().length === 1 && wsLeft()[0] === "ws-c-ancient.json", wsLeft().join(","));
+
+  // D. 旁文件不能被误伤（cache/ 里还有 messages-*.json、folders-*.json）
+  const bystander = path.join(cacheDir, "messages-keepme.json");
+  fs.writeFileSync(bystander, "{}");
+  pruneWsCache();
+  check("pruneWsCache 不碰非 ws- 文件", fs.existsSync(bystander) && wsLeft().length === 1);
+
+  fs.rmSync(cacheDir, { recursive: true, force: true });
+}
+
+// ── 8. 点击轮询自适应（原来是恒定 1 秒 = 卡片开着时每小时 3600 次请求） ──
+// 1 秒的密度只在「通知刚发出的那两分钟」里有意义；平时点无可点。
+// 历史同样只验形状（“有这段代码”）而没验行为，这次把两个方向都钉一下。
+{
+  const html = fs.readFileSync(path.join(ROOT, "ui", "mail.html"), "utf-8");
+  check("点击轮询不再是恒定 1 秒 setInterval",
+    !/setInterval\(async function \(\) \{[\s\S]{0,700}\},\s*1000\)/.test(html));
+  check("点击轮询改成自适应（快窗口 + 慢间隔）",
+    html.includes("_CLICK_FAST_WINDOW_MS") && html.includes("_CLICK_SLOW_MS")
+    && /setTimeout\(clickPollTick/.test(html));
+  check("通知入队时打开快轮询窗口", html.includes("noteClickWindow();"));
+  check("卡片打开时立刻查一次（承接卡片关闭期间攒下的点击）",
+    /function startClickPoll\(\)[\s\S]{0,240}clickPollTick\(\);/.test(html));
+  check("过期的点击仍然被丢弃（隔夜打开不跳旧信）", html.includes("_CLICK_EXPIRE_MS"));
+}
+
+// ── 9. 轮询开销（2026-09-22：真账约 6000 封/小时，贵的不在频率、在单次数据量） ──
+// 60 秒轮询 60×50=3000；3 分钟自动同步 20×(50+100)=3000（其中 filter-spam 自己拉 100）。
+// 下面四条把那三个放大项钉住。
+{
+  const inboxSrc = fs.readFileSync(path.join(ROOT, "backend", "inbox.mjs"), "utf-8");
+  const uiSrc = fs.readFileSync(path.join(ROOT, "http", "ui.js"), "utf-8");
+  const htmlSrc = fs.readFileSync(path.join(ROOT, "ui", "mail.html"), "utf-8");
+  const cwSrc = fs.readFileSync(path.join(ROOT, "backend", "clawemail-backend.mjs"), "utf-8");
+
+  // filter-spam 曾经每 3 分钟把 100 封邮件全拉一遍，只为比对一张**本地**黑名单
+  const scanMatch = /filterSpamMessages[\s\S]{0,900}?limit:\s*(\d+)/.exec(inboxSrc);
+  check("filter-spam 扫描窗口已收紧（≤30）",
+    scanMatch !== null && Number(scanMatch[1]) <= 30, `limit=${scanMatch ? scanMatch[1] : "?"}`);
+
+  const autoMatch = /AUTO_SYNC_INTERVAL_MS = (\d+) \* 60 \* 1000/.exec(uiSrc);
+  check("自动同步间隔 ≥5 分钟（原 3 分钟）",
+    autoMatch !== null && Number(autoMatch[1]) >= 5, `${autoMatch ? autoMatch[1] : "?"} 分钟`);
+
+  const statusMatch = /refreshNotiStatus, (\d+)\)/.exec(htmlSrc);
+  check("notify-status 轮询 ≥60 秒（原 30 秒）",
+    statusMatch !== null && Number(statusMatch[1]) >= 60000, `${statusMatch ? statusMatch[1] : "?"} ms`);
+
+  // limit 得诚实：`list --limit=5` 不能再被 Math.max(numLimit, 50) 放大成 50 封真实抓取
+  check("ClawEmail 列表不再无条件把 limit 放大到 50",
+    !/queryParams = \{ fid, limit: Math\.max\(numLimit, 50\) \}/.test(cwSrc) && cwSrc.includes("hasPostFilter"));
+
+  // `since` / `before` 会被 SDK 静默丢弃（打包产物里是硬编码参数白名单）——
+  // 它不是“已支持但没人用”，是“看着能用、实际什么都不做”。留条 tripwire。
+  check("★ since/before 失效这件事在源码里有警告（SDK 静默丢弃）",
+    cwSrc.includes("传下去是**无效的**"));
+
+  // ★ 列表必须**显式**要倒序。
+  //   order/desc 在 SDK 的参数名单里、是透传的；不给就是 undefined，
+  //   服务端按默认序（升序）返回，而 limit 截掉的是**最新**那头 ——
+  //   “最新 50 封”于是变成“最旧 50 封”，新邮件永远不会出现。
+  //   2026-09-22 用真实账号实测：不传 → 05-04~05-14；传 → 09-22~08-06。
+  check("★ ClawEmail 列表显式要求按日期倒序（否则拿到的是最旧的 50 封）",
+    /order:\s*"date"/.test(cwSrc) && /desc:\s*true/.test(cwSrc));
+
+  // ★ 依赖清单只能有一份，而且不能手写。
+  //   手写的会烂：0.6.0 把 imap 换成 imapflow 时，http/ui.js 里两份硬编码探针
+  //   没跟着改，于是一条“IMAP 依赖未安装”把 QQ 邮箱的同步整条挡住——而依赖其实齐着。
+  check("★ 后端依赖判定不硬编码包名（imap→imapflow 那次就是这样烂的）",
+    !/node_modules"\s*,\s*"imap"/.test(uiSrc));
+  check("★ AppHost 侧与运行时共用同一份依赖判定",
+    /missingBackendDeps/.test(uiSrc) && /missingBackendDeps/.test(svcSrc));
 }
 
 dispose();

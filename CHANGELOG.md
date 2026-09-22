@@ -1,5 +1,487 @@
 # Changelog
 
+## [0.6.6] — 2026-09-22
+
+### 修复：QQ 邮箱同步被一条化石提示挡住
+
+报错是 “IMAP 依赖未安装”（`http/ui.js:104`），而**依赖其实是齐的**：
+`imapflow` 与 `nodemailer` 都在 `backend/node_modules` 里。
+
+真正在找的东西是 `node_modules/imap/package.json` —— 而 `imap`
+在 0.6.0 就已经被换掉删除了。**依赖没缺，是检查没跟上。**
+
+同一个包里其实早就有写对的版本：`runtime/service.mjs` 的 `checkDeps()`
+从 `backend/package.json` 的 `dependencies` 推导，而它跑过了（日志里“后端依赖就绪”）。
+问题只是 AppHost 那一侧另有两份硬编码清单：`checkBackendDeps` 与 `/deps-status`。
+
+### 修法：把规则收成一份
+
+新增 `backend/deps.mjs`，导出 `missingBackendDeps(backendDir)`——
+唯一判定：读 `backend/package.json` 的 `dependencies`，逐个查 `node_modules`。
+
+- `http/ui.js`：`checkBackendDeps` 与 `/deps-status` 都改用它
+- `runtime/service.mjs`：`checkDeps()` 改为调用它（删除重复实现）
+- `scripts/smoke-load.mjs`：加两条静态哨兵，钉住“不硬编码包名 + 两侧共用”
+
+顺带简化：不再按账号类型分叉。后端在模块加载时就会 `import imapflow` /
+`@clawemail/node-sdk`，任何一个缺失都会把整个后端带下去，
+所以“缺了就是全都不能用”才是诚实的说法。提示语也不再让人去 `npm install`
+（见下）。
+
+### 关于“依赖不自动装吗”
+
+曾经是自动的 —— 代码里还留着 `.hanako-auto-install.lock` 和“正在自动安装中…”的分支。
+但受管 native 运行时被 Job Object 管着，**不能再 spawn 任何进程**（实测 `spawn EPERM`），
+`npm` 永远跑不起来。`runtime/service.mjs` 的注释里记着这次实测。
+
+所以现在的设计是：**依赖随安装包发布**（`backend/node_modules` 入包），
+运行时只负责检查与明确报错。错误提示因此也改成
+“重新安装本应用”而不是“去跑 npm install”。
+
+## [0.6.5] — 2026-09-22
+
+### 修复：列表从不要求倒序，于是新邮件永远不出现
+
+`clawemail-backend.mjs` 的 `listMessages` 只向服务端传了 `{ fid, limit }`。
+而 SDK 的 `transport.listMessages` 其实是**透传**的：
+
+```js
+this.client.call("mbox:listMessages",{ fid, order: e.order, desc: e.desc, start, limit, filterFlags })
+```
+
+`order` / `desc` 不给就是 `undefined` → 服务端按默认序返回（**升序**）→
+而 `limit` 截掉的是**最新**那头。于是“最新 50 封”变成“最旧 50 封”，
+新邮件在界面上永远不会出现 —— 而手动同步、实时缓存、文件夹计数都在正常工作，
+所以从外面看像“缓存没刷新”。
+
+真实账号实测（同一邮箱 `fid=1`、`limit=50`）：
+
+| 取法 | 返回 |
+|---|---|
+| 不传 order/desc | 2026-05-04 ~ 05-14（最旧的 50 封） |
+| `order:"date"`, `desc:true` | 2026-09-22 ~ 08-06（最新的 50 封） |
+
+修法：显式传 `order:"date"` 与 `desc:true`（与同一份 SDK 里的 `searchMessages` 一致）。
+
+> 顺带纠正一条陈旧注释：原文写“SDK 里写死 fid/order/desc/...”，
+> 实际写死的是**参数名集合**，`order`/`desc` 的值是调用方给的。
+> `since`/`before` 确实不在名单里（那条结论仍成立）。
+> `scripts/smoke-load.mjs` 相应加了一条静态哨兵。
+
+## [0.6.4] — 2026-09-22
+
+### 从主导航里撤下「邮件」入口
+
+0.6.1 加上 `siteNavEntry: true` 是为了让卡片作为页面可达，
+但那同时把「邮件」放进了左侧主导航，占了一个位置——他要的是“能打开”，不是“被展示”。
+
+改为 `siteNavEntry: false`，页面形态保留（`realization: "page"` + `detached` 不动）：
+
+- 仍然作为独立页面/窗口打开
+- 不再出现在站点导航里
+
+> 写显式 `false` 而不是删掉该字段：防止宿主对“未声明”采取“默认显示”的策略。
+
+## [0.6.2] — 2026-09-22
+
+### 修复：独立窗口下所有路由调用都 403 missing_credential
+
+上一版把“拿不到账号”显示成具体错误后，真相就出来了：
+
+```
+账号加载失败：HTTP 403 {"error":"forbidden","reason":"missing_credential"}
+```
+
+不是 token 过期，是**根本没有凭据**。
+
+**根因**：卡片一直在用 `new URL(location.href).searchParams.get('token')` 取凭据，
+而宿主授权走的是「文档绑定的 surface session」——
+看宿主 SDK 里的 `pluginApiFetch`（`hanako-audio-player/ui/standalone.html:1492`）：
+
+```js
+var APP_SURFACE_SESSION_HEADER = "X-Hana-App-Surface-Session";
+var APP_SURFACE_SESSION_QUERY  = "appSurfaceSession";
+```
+
+- 查询参数 `appSurfaceSession`（宿主注入到文档 URL）
+- 请求头 `X-Hana-App-Surface-Session: <值>`
+
+独立窗口 / 独立页面没有 `?token=`，于是一个凭据也带不上 → 代理 403。
+内嵌卡片里能跑，是因为宿主那时把 `?token=` 注入了进去。
+
+**修法**（两种凭据都读，surface session 优先）：
+
+- `api()`：带 `X-Hana-App-Surface-Session` 请求头，URL 上也挂一份查询参数
+- `attachmentUrl()` / `proxyUrl()`：这两处走 `<img src>` / `<a href>`，**带不了请求头**，
+  所以只能把凭据写进查询参数——统一收敛到 `withCred()`
+- 顺手修正 `api()` 的请求头合并：原来只要 `options.headers` 存在，`Content-Type` 会被整个顶掉
+
+另外 `APP_ID` 从 `location.pathname.split('/')[3]` 改成正则提取 `/api/apps/<id>/`——
+独立页面未必落在 `/ui/` 这一层，写死下标会取到错的 appId。
+
+> 后端自己不校验凭据，这些 URL 全部经宿主代理鉴权。
+
+## [0.6.1] — 2026-09-22
+
+### 卡片改为「页面」形态，并声明独立窗口
+
+点击邮件入口时不再弹出内嵌卡片，而是作为**页面**打开（与 token-tracker / audio-player 同样做法）。
+字段语义来自宿主 SDK 的权威定义（`_ui-protocol.d.ts`）：
+
+- `realization: "page"` —— 这张卡作为整页存在，而不是内嵌卡片
+- `siteNavEntry: true` —— 只在 `realization: "page"` 上生效，让它进入站点导航
+- `detached.route` —— 独立窗口用的那个“包含完整导航的文档”
+- `detachedDefaultSize: 1200×800` —— 三栏布局需要宽一点，不再用通用默认尺寸
+
+> 这三个字段取值写错只会被当成“未声明”（应用仍能注册），不会把应用弄挂。
+
+### 修复：卡片把“拿不到账号”显示成“暂无账号”
+
+`loadAccounts()` 原来直接 `d.data || []`，不看 `ok`/HTTP 状态。
+而卡片持有的是宿主注入的 `?token=`，**应用重装/重新注册后它会失效**，
+那时 `/accounts` 返回 401，卡片就渲染成“暂无账号”——看起来像账号丢了，
+而“刷新窗口”和“去添加账号”是两个完全不同的行动。
+
+现在区分开了：非 2xx 或 `ok:false` 会显示具体的失败原因与提示（“若刚重装过应用，请刷新本窗口”），
+而不是伪装成空列表。
+
+## [0.6.0] — 2026-09-22
+
+**IMAP 层整体从 `imap@0.8.19`（node-imap，已废弃）迁到 `imapflow@2.0.5`。**
+`backend/imap-backend.mjs` 已删除，`imap` 依赖已移除。
+
+> 这一轮真正的起点不是写代码，是**先追出一个能测的环境**：
+> 本机没有任何 IMAP 账号，这条路径从来没被跑过。用 Ethereal（nodemailer 自带的
+> 测试邮箱）+ 一个真实 QQ 邮箱把回归探针建起来之后，才看出下面这些问题。
+
+### 迁移中挖出的 5 个既有 bug（全部只在真机上才会暴露）
+
+1. **`readMessage` 在协议层就是坏的**：node-imap 会自己把值塞进 `BODY.PEEK[...]`，
+   而旧代码传的是 `"BODY[]"` → 拼成 `BODY.PEEK[BODY[]]` → 服务器报
+   `Invalid message data item BODY[BODY[]]`。**IMAP 账号上读任何一封邮件都失败**，
+   而且那个 error 挂在连接上没人接，会直接把服务进程带走。
+2. **`searchMessages` 搜不到就抛异常**：node-imap 在 UID 列表为空时是同步
+   `throw new Error('Nothing to fetch')` —— “搜不到”变成一次异常，而它是最常见的正常情形。
+3. **`--fid=` 与 `options.folder` 不匹配**：`ui.js` 一律发 `--fid=<路径>`，
+   而 IMAP 侧只读 `options.folder` → **选任何非 INBOX 文件夹都会静默显示 INBOX**；
+   `mark-read` 更糟，会在 INBOX 里把同 UID 的那封标成已读。
+4. **`deleteMessage` 必然死锁**：它在持有连接的回调里又调 `listFolders` → 再取一次连接，
+   而连接池不可重入 → 请求永久挂住，且那条连接永远卡在 busy，
+   **该账号后续所有 IMAP 操作排队等死**，直到服务重启。
+5. **`read` 字段是反的**：`read: !flags.includes("\\Seen")` —— 已读邮件报未读。
+
+它们形状完全相同：**全在一条从来没人走过的路上。**
+
+### 实现
+
+- 新增 `backend/imapflow-client.mjs`（单一 IMAP 入口）与 `backend/imap-config.mjs`
+  （域名推断表只留一份）
+- **监听连接与命令连接是两条**：`imap-idle.mjs` 自己 new 一个 `ImapFlow`，
+  不走命令连接池。否则 IDLE 长期占用与独占锁会互相饿死，
+  症状是“通知照弹、点开列表转圈”
+- 文件夹类型改用服务器标的 `specialUse`（`\Sent` / `\Drafts` / `\Trash` / `\Junk`），
+  不再靠“7 项候选名 + 中文正则”猜
+- 铁律：**绝不在 `withClient` 回调里调会 `withClient` 的公开函数**（第 4 条的根因）
+
+### 验证（真实环境）
+
+```
+mail-e2e-probe（真 QQ）:      0 failure   ← 发信→收信→读→删除，含存已发送副本
+imap-write-probe（真 QQ）:    0 failure   ← 18 项写操作
+imap-idle-probe（真 QQ）:     0 failure   ← 实时监听
+imap-probe imapflow（Ethereal）: 0 failure
+node --check: 42 files / 0 fail
+smoke-load / smoke-notify / smoke-bridge: 0 / 0 / 0
+```
+
+新增回归脚本：`scripts/imap-probe.mjs`（读路径）、`scripts/imap-idle-probe.mjs`（监听）、
+`scripts/imap-write-probe.mjs`（写操作）、`scripts/mail-e2e-probe.mjs`（端到端）、
+`scripts/imap-cleanup-probe.mjs`（清理测试邮件）。
+
+> 对只使用 ClawEmail / AgentQQ 的账号，本次没有行为变化 —— 那些走的是另一条管道。
+
+## [0.5.0] — 2026-09-22
+
+轮询开销收尾。起因只是一句「轮询影响性能吗」—— 一算真账是**约 6000 封/小时**，
+而且贵的不是频率，是单次数据量。
+
+### 修复：`--limit=5` 其实每次取 50 封
+
+`clawemail-backend.mjs` 无条件写 `limit: Math.max(numLimit, 50)`，于是 AppHost 那个
+`list --limit=5` 的 60 秒轮询，每次都从服务端取 50 封再本地砍到 5。
+
+改成**只在需要后过滤时才多取余量**。四处 `--limit=50` 的调用方行为不变（50→50）。
+
+### 发现：`since` / `before` 是静默失效的死代码
+
+`clawemail-backend.mjs` 里有 `if (since) queryParams.since = since`，看着是「已支持增量」。
+但 SDK 打包产物里 `listMessages` 用的是**硬编码参数白名单**
+（`fid/order/desc/start/limit/filterFlags`），`since` 和 `before` 被静默丢弃。
+
+所以那不是「实现了但没人用」，是**看着能用、实际什么都不做** —— 照着它去做增量优化
+会发现毫无变化，然后以为是自己想错了。已在源码里挂警告。
+真增量只能靠客户端比对（`_poll_last_ids.json`）或 `start` 分页。
+
+### 修复：filter-spam 是全应用最大的单一开销
+
+`filterSpamMessages` 为了比对一张**本地黑名单**，每次都 `listMessages({ limit: 100 })`。
+它每 3 分钟被自动同步调一次 → **2000 封/小时**，比 60 秒轮询还重。
+
+扫描窗口 100 → 20。代价：应用关闭期间进的、排在第 20 位之后的黑名单邮件不会被自动移走。
+
+### 调整：自动同步 3 分钟 → 6 分钟
+
+每轮要发两次请求（`list --limit=50` + `filter-spam`），20 轮/小时 → 10 轮/小时。
+新邮件延迟不受影响 —— 那是 60 秒轮询的职责（`ui.js:1236` 已注明通知走实时路径）。
+
+### 调整：卡片 notify-status 30 秒 → 60 秒
+
+### 效果
+
+| | 改前 | 改后 |
+|---|---|---|
+| 60 秒轮询 | 60 × 50 = 3000 | 60 × 5 = **300** |
+| 自动同步 | 20 × (50+100) = 3000 | 10 × (50+20) = **700** |
+| 合计 | **~6000 封/小时** | **~1000 封/小时** |
+
+**故意未动**：60 秒轮询的间隔本身。`ui.js:1205` 的注释写着它是从 5 分钟特意调下来的
+（提升新邮件感知速度）—— 那是刻意的选择，不擅自推翻。
+
+### 顺带
+
+- `smoke-load.mjs` 再增 5 条守卫，把这四个放大项钉住。
+
+## [0.4.9] — 2026-09-22
+
+一轮**文件与轮询**收尾。起因是用户问「会产出什么文件」—— 一量才发现两处无上限增长。
+
+### 修复：两个会无限增长的日志
+
+`ws-monitor.log` 从 2026-09-10 起每行 `appendFileSync`，**没有任何滚动** ——
+12 天长到 710 KB（约 59 KB/天，一年约 20 MB）。`imap-idle.log` 同类问题，只是慢些（27 KB）。
+而 `runtime/service.mjs` 里早有「保留 64 KB、超出后滚到 48 KB」的实现 —— 三个日志里
+只有它一个有。
+
+抽出 `backend/log-roll.mjs`（`appendRolling`），三个日志同一规则。
+
+### 修复：`cache/ws-*.json` 没有清理机制
+
+每封实时收到的邮件都落一个 `ws-<accountId>-<mailId>.json`（含正文全文），
+实测 62 个 / 1.65 MB，单个最大 529 KB，随收信量线性增长。
+
+新增 `pruneWsCache()`：**只按数量封顶（500 个）**，启动时清一次、每写入 50 封再清一次。
+
+> **为什么没有时间上限**：这两个文件看着像缓存，其实不是。
+> `readWsCache()`（`http/ui.js:324`、`tools/sync.js:21`）把它们整个并进邮件列表，
+> 而服务器侧固定只给最新 50 封（`list --limit=50`）—— 比那 50 封更老的、
+> 只靠实时通道收到的信，**这份文件是它们在本地唯一的痕迹**。
+> 最初写的是「14 天 + 200 个」双上限，装机前自查时发现**会删掉 62 个里的 54 个**，
+> 等于让列表里的旧邮件凭空消失。因此退回只封顶数量，不碰时间。
+
+### 改进：点击轮询改成自适应
+
+原实现恒定 1 秒 = 卡片开着时**每小时 3600 次**请求，而它们绝大多数读到的是
+「没有点击」—— 1 秒的密度只在通知刚发出的那两分钟里有意义。
+
+改成：通知入队（或最近一次投递在 2 分钟内）时 1 秒，平时 15 秒。
+空闲时约降到 240 次/小时，通知后仍是秒级响应，且卡片打开时立即查一次
+（承接卡片关闭期间攒下的点击）。
+
+### 顺带
+
+- `scripts/smoke-load.mjs` 增 14 条守卫：既验形状，也用 4000 行实测 `appendRolling`
+  真的滚动 —— 只验形状正是之前让两个真 bug 躺两天的那个缺口。
+
+### 未做（见 `05-IMAP层-imapflow迁移设计.md`）
+
+- 60 秒轮询仍 `list --limit=5`、3 分钟同步仍 `list --limit=50`（约 1000 封/小时）。
+  正解是「只问数量（STATUS）」与「增量取信」，天然属于 imapflow 迁移，不塞进本轮。
+
+## [0.4.8] — 2026-09-22
+
+一轮**独立复核**（艾莉丝）后补齐的修复。感谢她的发现：下面 1、2 条是她的原始报告。
+
+### 修复：汇总通知不可点击（一波 ≥3 封合并时）
+
+`lib/notify-drain.mjs` 的合成项只有 `id: null` 与 `_ids`，**没有 `messageId` / `accountId`**，
+而 `armClickPipe` 照样按照空串去 arm 管道 → 点击写出 `messageId: ""` →
+卡片侧 `if (d.data.messageId)` 为假 → 什么都不发生。
+而队列里的原始条目**已被 ack 删除**，用户既跳不过去、也没第二次机会。
+
+改为：汇总项带上**最新那封**的 `messageId` / `accountId`（`listNotifications` 按入队
+时间升序，最后一项就是最新的），另加 `summaryCount` 写进点击记录，让卡片能区分
+「点开一封」与「点开一批」。
+
+### 修复：SnoreToast 自己的失败没有任何痕迹
+
+`markAttempt` 在 `execFile` **之前**就把 `attempted: true` 写进结果文件，而派发器的
+ack 判据正是「本次 spawn 之后出现过 attempted 记录」。于是 SnoreToast 之后失败、
+降级、或根本没弹时：**派发器仍判定成功并删掉队列条目**，而那些错误只走子进程 stderr，
+AppHost 日志里**完全不存在**。
+
+这与原始 bug（写 `os.tmpdir()` 被拒 → 静默丢弃）是同一类病的另一个位置：
+失败没有落到可观测的地方。
+
+ack 语义维持（队列是「要发什么」，派发过一次就算完成，否则一条永远弹不出的通知会把
+队列卡到 TTL），但**失败必须留痕**：SnoreToast 的错误写进结果文件的 `snoreToastError`
+字段，派发器见到就 `log.warn("通知已派发，但 SnoreToast 报了失败（已走降级链）")`，
+`/notify-status` 也读它（`lastSnoreError`）。
+
+### 修复：测试通知与派发轮次共享结果文件 → 可能误 ack / 重复弹
+
+`sendTestNotification()` 不走 `draining` 标志，而所有 helper 写的是同一个
+`notify-last-result.json`，后写的覆盖先写的：
+
+- 测试记录时间戳晚于某一轮 `drainOnce` → 被判成「这一轮成功」→ **误 ack 删掉真通知**；
+- 反之 → 真投递被判失败 → 不 ack → 5 秒后重发 → **重复弹**。
+
+改为每次 spawn 传 `--result-id`，助手写进记录，派发器**只认自己那次的记录**。
+
+### 修复：`draining` 可能长时间卡住且无痕迹
+
+`callService` 的 `timeoutMs` 上限 30 秒而轮询周期 5 秒，服务挂起时 `draining` 恒为真，
+后续轮次全部跳过。加上超时（45 秒）强制复位 + `log.warn`。
+并发两轮现在是安全的（靠 `result-id` 隔离）。
+
+### 文档与断言校正
+
+- **过期注释**：`helper/mail-toast.cjs` 与 `README.md` 都把「Node 权限模型不拦具名管道」
+  写成了普适结论 —— 那是跑在系统自带 Node 24（还没网络门）上的实验结论。
+  已改为「在**受管服务**里可用；AppHost 的子进程**没有 net 权限，建不了**」。
+- **`父进程必须活着`** → 改为「**管道的拥有者**必须活着」（现在拥有者是服务）。
+- **断言措辞**：`smoke-click.mjs` 里 `rec.attempted === true` 的断言改名，
+  明说它验证的是「已尝试投递」，**不代表系统已展示通知**。
+- 新增断言：汇总通知的 `summaryCount` 能落到点击记录里；助手记录本次 `--result-id`。
+
+### 复核报告
+
+`通用/开源仓库分析/06-通知链路对抗复核.md`（含「检查过、没问题」与「未覆盖」两部分）。
+
+## [0.4.6] — 2026-09-22
+
+### 修复：点击回调的管道搬到服务侧（v0.4.4 的做法在生产环境根本建不起来）
+
+0.4.4 让助手自己建具名管道。实测在真实 AppHost 里直接失败：
+
+```
+"clickError":"createServer: ERR_ACCESS_DENIED
+             Access to this API has been restricted. Use --allow-net to manage permissions."
+```
+
+宿主给应用子进程拼的 argv 只有 `--permission` + `--allow-fs-read=<安装目录>`
++ `--allow-fs-read/write=<app-data>` + `--allow-child-process`，**没有 `--allow-net`**；
+Node 26 的权限模型把 `net`（含 Windows 具名管道）一起管住。
+
+（开发期「权限模型内能建管道」的实验之所以通过，是因为它跑在系统自带的 Node 24 上，
+24 还没有网络门 —— 复现平台与生产不一致时，“能跑通”不可信。）
+
+改为管道由**服务**建：新增 `POST /notify-arm-pipe`，服务建一条一次性管道
+（`\\.\pipe\hana-mail-click-<id>`，TTL 90 秒），把邮件身份（`messageId` / `accountId`）
+存进去；AppHost 拿到管道名后用 `--pipe-name` 转交给助手；SnoreToast 写回
+`action=activate` 时由服务直接写 `<dataDir>/notify-click.json`。
+
+好处：两侧各用自己的权限，与现有架构一致（需要网络的活全部收在服务里）。
+助手不再需要 net，也不再需要为等点击而留活（管道不是它的了）。
+
+注：SnoreToast 写回的内容不含邮件身份，所以 arm 时必须把 `messageId` /
+`accountId` 一起交过去 —— 否则点开了也不知道是哪封。
+
+## [0.4.5] — 2026-09-22
+
+### 修复：native 沙箱建不起来时服务直接失败（邮件功能整个不可用）
+
+本机 `C:\Users\<user>\.hanako` **本身是符号链接**（ReparsePoint），
+宿主 sandbox helper 见到 HANA_HOME 上有重解析点就直接拒绝：
+
+```
+[native-identity] reparse root is not supported (Win32 0)
+```
+
+这不是「权限没给」，是机器布局决定的，重试多少次都一样。
+原先只试 `profile: "native"` 一次，失败即 `_state = "failed"` → 邮件完全不可用。
+
+改为：native 失败 → 记 warn → **降级 `local-machine` 重试一次** → 成功则继续。
+
+- `manifest.json` 新增声明 `app/runtime.local-machine`（不声明的话降级这一步会被
+  宿主的 capability 校验拒掉，成了「降级也降不下来」）
+- `lib/runtime-host.mjs` 新增 `serviceProfile()` 导出；`v2 ready` 日志与
+  `/notify-status` 都会带上实际生效的 profile
+- 如实标注代价：`local-machine` **不提供文件隔离**（`enforcement: none`），
+  服务以当前系统用户权限运行
+
+### 修复：通知派发不再挂在「服务已就绪」分支里
+
+`startNotificationDrain` 原来只在 `startService` 返回 ready 时启动。而它本身就是
+「服务不可用时的探针」（每轮调 `callService`，失败就下轮再试），且 runtime-host 的
+惰性自愈只等「第一次真调用」—— 唯一会周期性发起真调用的消费者正是它。
+把它关在 `if (ready)` 里等于让两条路互相等：实测重装后服务起不来的那一次，
+通知也一起没了。现在无条件启动。
+
+### 变更：不再用 SnoreToast 退出码判断送达
+
+（同 0.4.4，此版一并发布。）
+
+## [0.4.4] — 2026-09-22
+
+### 修复：系统通知一条都没弹出过（根因：写进了 `os.tmpdir()`）
+
+`helper/mail-toast.cjs` 把 sidecar 写进 `os.tmpdir()`，而它是 AppHost 的**子进程**，
+**Node 权限模型会继承给子进程**，写白名单只有「安装目录 + app-data」。于是
+`fs.writeFileSync` 抛 `ERR_ACCESS_DENIED`，进程在调用 SnoreToast **之前**就死了。
+
+日志实证（两条，成功 0 条）：
+
+```
+Error: Access to this API has been restricted. Use --allow-fs-write to manage permissions.
+    at Object.writeFileSync (node:fs:2997:20)
+    at tryNotifyViaSnoreToast (.../helper/mail-toast.cjs:101:6)
+  code: 'ERR_ACCESS_DENIED', permission: 'FileSystemWrite',
+  resource: '\\\\?\\C:\\Users\\...\\AppData\\Local\\Temp\\hanako-click-args-....json'
+```
+
+改法：新增 `--work-dir`（缺省回退 `HANAKO_PLUGIN_DATA`），一切写盘落 app-data。
+
+### 修复：参数解析器不认连字符键名
+
+`/^--(\w+)=?.../` 把 `--args-file <path>` 解析成 `args.args = "-file"`，
+`args["args-file"]` 永远 undefined → **JSON 参数文件从来没被读过**，主题一直
+退化成「(无主题)」。改为 `/^--([\w-]+)(?:[=\s]+([\s\S]*))?$/`，三种写法都认。
+
+### 修复：点击通知打开邮件从来没工作过
+
+`-click` **不是 SnoreToast 的标志**（二进制按 UTF-16LE 扫描，`-click` 命中 0；
+`-close` / `-pipeName` / `-install` / `-appID` / `-silent` 都在）。所以
+`click.vbs` → `notify-click.json` → `/clicks/latest` 那条链从未被触发过。
+
+改为具名管道（照 node-notifier 的做法）：助手先建 pipe server，`-pipeName` 传
+完整路径，SnoreToast 被点击时以 UTF-16LE 写回 `key=value;`，`action=activate`
+即写 `notify-click.json`。父进程因此不能弹出即退出（上限 25 秒），
+派发器同步改为「看到投递记录即算一轮完成，不等子进程退出」。
+
+### 变更：队列从「取走即删」改为「确认后删」
+
+`/pending-notify` 改为只读并返回 `id` / `depth`；新增 `POST /notify-ack` 才真删。
+另加同 `messageId` 去重、上限 200（丢最旧）、TTL 24h。
+
+### 变更：不再用 SnoreToast 退出码判断送达
+
+实测通知已弹出仍返回 `-1`。改为助手写 `<dataDir>/notify-last-result.json`，
+派发器与 `/notify-status` 都读它。
+
+### 新增：通知链路的可观测性
+
+- `GET /notify-status`：`drainRunning` / 队列深度 / 最近一次投递方式与时间 / 上次失败
+- `POST /notify-test`：走完整链路发一条测试通知
+- 卡片「设置 → 系统通知」：状态行 + 测试按钮
+- `scripts/smoke-notify.mjs`：队列语义回归（11 项）
+- `scripts/smoke-click.mjs`：点击回调端到端（**在复刻 AppHost 的权限模型下**跑）
+- `scripts/smoke-bridge.mjs`：「取走即清空」那条断言按新语义重写
+
+### 文档
+
+- README 订正：60 秒轮询**只写缓存、不弹通知**（v0.1.18 起），旧文档说反了
+- README 补：队列语义、退出码不可信、点击回调原理、写白名单约束
+
 ## [0.4.2] — 2026-09-11
 
 ### 文档：更新时必须先停用（踩过并已定位）

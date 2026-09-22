@@ -30,7 +30,7 @@ import { APP_ID, runtimeDataDir, legacyDataDir } from "./lib/env.mjs";
 import { legacyCtx } from "./lib/legacy-ctx.mjs";
 import { registerTools } from "./lib/register-tools.mjs";
 import { registerRoutes } from "./lib/register-routes.mjs";
-import { startService, stopService, serviceRuntimeId, serviceProxyPrefix } from "./lib/runtime-host.mjs";
+import { startService, stopService, serviceRuntimeId, serviceProxyPrefix, serviceProfile } from "./lib/runtime-host.mjs";
 import { startNotificationDrain, stopNotificationDrain } from "./lib/notify-drain.mjs";
 
 export const name = APP_ID;
@@ -75,12 +75,21 @@ export async function apply(ctx) {
   // 首次装载很可能被拒。lib/runtime-host.mjs 会在第一次真调用时自愈重试。
   const ready = await startService(ctx, { dataDir, legacyDir, log });
 
+  // 通知派发**无条件**启动，不再挂在服务就绪分支里。
+  //
+  // 它本来就是「服务不可用时的探针」：内部每轮调 callService，服务没起来时
+  // 自然返回 ok:false，下一轮再试。而 runtime-host 的惰性自愈只等「第一次真调用」，
+  // 唯一会周期性发起真调用的消费者就是这个派发器 —— 把它关在 ready 里，
+  // 等于让两条路互相等。实测：重装后服务起不来的那一次，通知也一起没了。
+  try { startNotificationDrain(log); }
+  catch (e) { log.warn("启动通知派发失败", { error: e.message }); }
+
   if (ready) {
-    // 通知由 AppHost 发：服务不能 spawn，而 Windows 通知必须拉起进程。
-    // 服务负责写队列（它收得到邮件），这里只负责定时取走并派发。
-    try { startNotificationDrain(log); }
-    catch (e) { log.warn("启动通知派发失败", { error: e.message }); }
-    log.info(`${APP_ID} v2 ready`, { runtimeId: serviceRuntimeId(), proxyPrefix: serviceProxyPrefix() });
+    log.info(`${APP_ID} v2 ready`, {
+      runtimeId: serviceRuntimeId(),
+      profile: serviceProfile(),
+      proxyPrefix: serviceProxyPrefix(),
+    });
   } else {
     log.warn(`${APP_ID} 已加载，邮件后端暂不可用 —— 将在首次收发时自动重试`, {
       hint: "先看上一条 [ERROR] 的 error/hint 字段（已按错误类型分类）：授权不足、"

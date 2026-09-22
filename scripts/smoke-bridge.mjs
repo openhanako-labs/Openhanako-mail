@@ -25,8 +25,10 @@ function check(name, ok, detail = "") {
 }
 
 // 依赖须已就位（本测试不跑 npm）。
+// 用 imapflow 而不是 imap：後者在 2026-09-22 的迁移里被摘掉了，
+// 当时这条守卫就变成了假 SKIP——而 SKIP 在汇总里读起来像“没事”，很危险。
 const nm = path.join(ROOT, "backend", "node_modules");
-if (!fs.existsSync(path.join(nm, "imap", "package.json"))) {
+if (!fs.existsSync(path.join(nm, "imapflow", "package.json"))) {
   console.log("SKIP  需要 backend/node_modules（先 npm install 或从已安装副本拷一份）");
   process.exit(0);
 }
@@ -136,11 +138,19 @@ check("runCli 走通桥（失败也是业务错误，不是协议错误）",
   cliErr ? cliErr.message.slice(0, 120) : `返回 ${Array.isArray(folders) ? folders.length + " 个文件夹" : "数据"}`);
 
 // 通知队列：服务写、AppHost 取
+//
+// v0.4.4 改了这里的语义：原来是「取走即清空」，而清空发生在 toast 被拉起**之前**，
+// 于是发送失败这条通知就永久消失（实测 09-20 23:15、09-21 19:06 两次）。
+// 现在是「读取不删 → 确认后删」。断言跟着行为改，不是把红灯抹掉。
 await callService("/notify", { subject: "t", sender: "s", messageId: "1", accountId: "a" });
 const drained = await callService("/pending-notify", { limit: 5 });
 check("通知入队后能被取走", drained?.ok === true && drained.items?.length === 1, JSON.stringify(drained).slice(0, 120));
+check("返回项带 id（确认删除需要它）", typeof drained?.items?.[0]?.id === "string" && drained.items[0].id.length > 0);
 const drained2 = await callService("/pending-notify", { limit: 5 });
-check("取走即清空（不会重复弹）", drained2?.items?.length === 0, JSON.stringify(drained2).slice(0, 80));
+check("取走不删（发送失败不丢，等下轮重发）", drained2?.items?.length === 1, JSON.stringify(drained2).slice(0, 80));
+await callService("/notify-ack", { ids: [drained.items[0].id] });
+const drained3 = await callService("/pending-notify", { limit: 5 });
+check("确认之后才清空", drained3?.items?.length === 0, JSON.stringify(drained3).slice(0, 80));
 
 // AgentQQ 设备码授权：start 是真实网络调用（不需要用户参与），能验到协议对不对。
 // 之所以要这一步：这套协议是从官方 CLI 的 --dry-run 与实测反推的，不是文档里拄的，

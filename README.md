@@ -197,6 +197,68 @@ AppHost（能 spawn，收不到邮件事件）→ 每 5 秒取队列 + 拉起 ma
 
 依赖 `backend/node_modules` 里的 `node-notifier`（已随包发布），不依赖开发机路径。
 
+#### 队列语义：确认后才删（v0.4.4）
+
+```
+/pending-notify   读队列，**不删**（返回 id 与队列深度）
+notify-ack        派发成功后才真删
+```
+
+原先读完就 `unlink`，而删除发生在 toast 被拉起**之前** —— 只要发送失败，
+这条通知就永久消失，只在日志留一行 warn。队列另加了同 `messageId` 去重、
+上限 200 条（超出丢最旧）、TTL 24 小时。
+
+#### 判断“发没发出去”不看退出码（v0.4.4）
+
+实测 SnoreToast 在通知**已经弹出**的情况下仍然返回 `-1`，退出码既证明不了送达、
+也证明不了失败。所以助手每次尝试投递都写 `<dataDir>/notify-last-result.json`，
+派发器按它判断、`/notify-status` 也读它。**失败从此不再只存在于日志里。**
+
+#### 点击通知打开邮件（v0.4.6）
+
+点击回调走**具名管道**，不是 `-click` —— 后者根本不是 SnoreToast 的标志
+（把 `snoretoast-x64.exe` 按 UTF-16LE 读出来扫，`-click` 命中 0）。但管道
+**不能在助手那边建**：
+
+> 宿主给应用子进程拼的 argv 只有 `--permission --allow-fs-read=<安装目录>`
+> `--allow-fs-read/write=<app-data> [--allow-child-process]`，**没有 `--allow-net`**；
+> 而 Node 26 的权限模型把 `net`（含 Windows 具名管道）也一起管住。助手侧一建就报
+> `createServer: ERR_ACCESS_DENIED ... Use --allow-net to manage permissions.`
+
+所以管道由**服务**建（它是 `profile: local-machine` + `network: external`，
+本来就在监听 `127.0.0.1`，有 net）：
+
+```
+AppHost（无 net）                        受管服务（有 net）
+  POST /notify-arm-pipe  ───────────▶  建 \\.\pipe\hana-mail-click-<id>
+  ◀── 返回管道名
+  拉起 mail-toast.cjs --pipe-name=<名> ─▶ SnoreToast
+                                        收到 action=activate
+                                        → 写 <dataDir>/notify-click.json
+```
+
+两个要点：
+
+- **身份（messageId / accountId）必须在 arm 时交给服务** —— SnoreToast 写回的只有
+  `action=activate;button=;...`，不含邮件身份；不传就不知道点的是哪封。
+- 管道是一次性的：收到事件即关，或 90 秒后自动关。
+- 卡片**没打开时**点击会一直留在 `notify-click.json` 里，下次打开卡片才跳转；
+  超过 10 分钟的旧点击会被丢弃。
+
+#### 自定义 AUMID 通知与写白名单
+
+助手的全部写盘都落在 `--work-dir`（app-data）。这不是风格问题：助手是 AppHost 的
+子进程，**Node 权限模型会继承给子进程**，写白名单只有「安装目录 + app-data」。
+早期把 sidecar 写进 `os.tmpdir()`，于是 `ERR_ACCESS_DENIED` 让进程在调用 SnoreToast
+**之前**就死了 —— 一条通知都没弹过。
+
+> 具名管道**在受管服务里**不受该限制 —— 服务是 `local-machine` + `network: external`，
+> 本来就在监听 `127.0.0.1`，有 net。这也是点击回调能做成的前提。
+> 反过来，**AppHost 的子进程建不了管道**：宿主给它拼的 argv 里没有 `--allow-net`，
+> 而 Node 26 的权限模型把 `net`（含 Windows 具名管道）一起管住。
+> （开发期有一次实验得出过相反结论，那是因为它跑在系统自带的 Node 24 上 ——
+> 24 还没有网络门。复现环境与生产版本不一致时，「能跑通」不算证据。）
+
 ## 账号配置
 
 支持四种邮箱类型：
@@ -324,9 +386,11 @@ for f in backend/*.mjs http/ui.js tools/*.js helper/*.cjs index.js; do node --ch
 |---|---|---|
 | ClawEmail | WebSocket（`ws-monitor.mjs`） | 秒级推送 |
 | 个人邮箱（IMAP） | IMAP IDLE（`imap-idle.mjs`） | 服务器支持 IDLE 时秒级；否则自动降级为 2 分钟周期检查 |
-| 全部账号 | 60 秒轮询兜底（`http/ui.js`） | 对比最近 5 封，新邮件写缓存 + 弹通知 |
+| 全部账号 | 60 秒轮询兜底（`http/ui.js`） | 对比最近 5 封，**只写缓存**；v0.1.18 起不再从这里弹通知，避免与实时路径重复 |
 
-新邮件到达后：弹 Windows 原生系统通知（SnoreToast，AppID 自动注册；点击回调尽力而为）+ 写入本地缓存（前端列表检测到新邮件自动刷新，无需手动刷新）。通知依赖 `backend/node_modules` 里的 `node-notifier`（已随包发布），不依赖开发机路径。
+新邮件到达后：弹 Windows 原生系统通知（SnoreToast，AppID 自动注册；**点击通知可打开该邮件详情**）+ 写入本地缓存（前端列表检测到新邮件自动刷新，无需手动刷新）。通知依赖 `backend/node_modules` 里的 `node-notifier`（已随包发布），不依赖开发机路径。
+
+> 排查通知问题不需要读日志：卡片「设置 → 系统通知」有状态行（队列深度、最近一次是否投递、投递方式与时间）与一个**测试通知**按钮，对应 `GET /notify-status` 与 `POST /notify-test`。
 
 ## 卸载与清理
 

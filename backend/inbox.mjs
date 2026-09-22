@@ -26,7 +26,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as clawemail from "./clawemail-backend.mjs";
 import * as agentqq from "./agentqq-backend.mjs";
-import * as imap from "./imap-backend.mjs";
+import * as imap from "./imapflow-client.mjs";
 import * as blocklist from "./blocklist.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -385,7 +385,12 @@ function senderEmailOf(msg) {
 export async function filterSpamMessages(accountEmail, options = {}) {
   const folder = options.folder || options.fid || "INBOX";
   try {
-    const messages = await listMessages(accountEmail, { folder, fid: folder, limit: 100 });
+    // 扫描窗口：**只要最新 20 封**（原来 100）。
+    // 这个函数每 3 分钟被 autoSync 调一次，每次都要把窗口内邮件全拉一遍才能拿到发件人 ——
+    // 20×100=2000 封/小时，是全应用最大的单一开销，而它做的事只是比对一张**本地黑名单**。
+    // 新邮件总在最前面，60 秒轮询也在同步感知新邮件，所以 20 封的窗口够用。
+    // 代价：应用关掉期间进的黑名单邮件，超过 20 封的那部分不会被自动移走。
+    const messages = await listMessages(accountEmail, { folder, fid: folder, limit: 20 });
     const list = Array.isArray(messages) ? messages : [];
     const movedIds = [];
 
@@ -499,7 +504,9 @@ export const COMMANDS = {
   },
   "mark-read": async ([email, messageId, ...rest]) => {
     const opts = parseOptions(rest);
-    return await markRead(email, messageId, true, opts.folder);
+    // 两个键都认：ui.js 一律发 `--fid=`，而这里历史上只读 opts.folder，
+    // 于是「在非 INBOX 文件夹里标记已读」会作用到 INBOX 的同 UID 邮件上。
+    return await markRead(email, messageId, true, opts.folder || opts.fid);
   },
   folders: async ([email]) => {
     return await listFolders(email);
