@@ -84,9 +84,13 @@ function saveMail(accountId, mail) {
 
 // ── 系统桌面通知：写队列，由 AppHost 取走并派发 ──
 //
-// 本模块现在跑在受管 native 服务里，**不能 spawn**（Job Object → EPERM），
-// 而 Windows 通知必须拉起一个进程。所以写队列，让有 --allow-child-process 的
-// AppHost 定时来取（见 http/ui.js 的 drainNotifications）。
+// ⚠ 原写「本模块跑在受管 native 服务里，不能 spawn（Job Object → EPERM）」——
+//   那条结论**已过期**：现在 native 永远建不起来（HANA_HOME 是符号链接），
+//   服务实际跑在降级后的 local-machine（enforcement: none），实探可以 spawn。
+//   唯一真相来源：runtime/service.mjs 的 probeSpawn。
+//
+// 但“写队列交给 AppHost”这个形态**暂时保留**：现链路是端到端验证过的，
+// 而合并两半属于简化、不属于修复（详见 lib/notify-drain.mjs 头部）。
 function notifyDesktop(subject, sender, messageId, accountId) {
   try {
     const dir = path.join(DATA_DIR, "_pending_notify");

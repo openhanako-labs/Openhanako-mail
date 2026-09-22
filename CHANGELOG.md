@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.6.9] — 2026-09-22
+
+### 新增：服务自己补依赖（那个“让用户开终端跑脚本”的暗坑）
+
+只要 0.6.8 的实测结论成立（服务**能** spawn），那么一段被废弃的能力就能拿回来：
+**服务自己 `npm install`**。
+
+以前不行——那段代码上写着“服务不能再 spawn（Job Object，实测 EPERM），npm 永远跑不起来”，
+于是改成依赖随包发布 + 只报错。而那个结论已过期（见 0.6.8）。
+
+它的真实代价是：更新 App 会把 `backend/node_modules` 整个清掉，
+而唯一的恢复路径是让**用户自己开终端跑 `scripts/restore-backend-deps.mjs`**。
+现在服务自己补。
+
+实现要点：
+
+- `findNpmRunner()`：扫 `process.execPath` 附近 + `PATH` + Program Files，
+  凑齐一对 **(node.exe, npm-cli.js)**。
+  ★ 不能拿 `process.execPath` 凑数——服务自己的它是 **hana-server.exe**，
+  拿它跑 `npm-cli.js` 只会把参数当成服务启动参数。凑不齐宁可不装。
+- `autoInstallDeps()`：`<node> <npm-cli> install --omit=dev --no-audit --no-fund`，
+  180 秒超时，装完重新用 `missingBackendDeps()` 验收（**不靠退出码下结论**）。
+- 安装期间写 AppHost 那个一直没人写的 `.hanako-auto-install.lock`，
+  让它回 202「正在自动安装中」而不是报错。
+- ★ 自愈**不阻塞就绪**：服务立刻开始监听，安装放后台，装好再 `loadBackend()`。
+  否则 `READY_TIMEOUT_MS`（15 秒）一到 AppHost 就会重试，
+  而一个还在 `npm install` 的服务进程会和第二个进程抢同一个 `backend/node_modules`。
+  也因此必须用 `execFile`（异步）—— `spawnSync` 会把 HTTP 事件循环一起堵死。
+  这也正好是 `main()` 里原本就写着的意图（“依赖检查不再阻塞就绪”）。
+- 仍然以「依赖随包发布」为主（解压即用、不依赖网络），自愈只是兜底。
+
+### 诊断：`/health` 现在报告 spawn 与 npm 可见性
+
+新增两个字段：`spawn`（探针结果）与 `npm`（找到的 npm 根目录与版本）。
+放在 `/health` 而不是新增端点——回环服务本来就没鉴权，不再多一个可被本机进程触发的动作。
+
+### 修正：七处“不能 spawn”的陈旧结论
+
+`service.mjs` / `clawemail-backend` / `notify-drain` / `imap-idle` / `ws-monitor` /
+`agentqq-auth` / `agentqq-backend` 都把「受管服务不能 spawn（实测 EPERM）」当成前提，
+其中几处正是三个架构决定（通知分两半、图片代理进程内、mail-cli 被替掉）的根据。
+
+现在它们都改成：标注那条结论已过期 + 指向唯一真相来源（`runtime/service.mjs` 的 `probeSpawn`）。
+各设计本身基本保留（它们还各有别的理由），只是不再靠一个假前提站住。
+
 ## [0.6.8] — 2026-09-22
 
 ### 新增：启动时实探一次「受管服务能不能 spawn」

@@ -1,10 +1,12 @@
 /**
  * AgentQQ 后端 —— 直连 REST API（不再依赖 agently-cli 子进程）。
  *
- * 为什么重写：官方 CLI 是 Go 原生二进制、必须 execFileSync，而本模块跑在
- * 受管 native 运行时里、不能再 spawn（Windows Job Object → EPERM）。
- * 而它打的只是普通 REST，服务自己就有网络 —— 所以直连，顺带省掉
- * `npm install -g @tencent-qqmail/agently-cli` 这一步。
+ * 为什么重写：官方 CLI 是 Go 原生二进制、必须 execFileSync。
+ * ⚠ 原文写的理由是「本模块跑在受管 native 运行时里、不能再 spawn（Job Object → EPERM）」
+ *   —— **那条结论已过期**：现在 native 永远建不起来（HANA_HOME 是符号链接），服务实际跑在
+ *   降级后的 local-machine（enforcement: none），实探可以 spawn。
+ *   唯一真相来源：runtime/service.mjs 的 probeSpawn。
+ * 直连依旧是对的（不用装全局 CLI、不用管子进程），只是理由不再是“不能 spawn”。
  *
  * 接口契约来自官方 CLI 的 `--dry-run`（它会把要发的 HTTP 请求原样打印）+
  * 实测确认，不是猜的：

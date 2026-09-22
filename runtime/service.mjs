@@ -33,7 +33,7 @@ import net from "node:net";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomBytes } from "node:crypto";
 import { startDeviceFlow, waitForAuthorization } from "../backend/agentqq-auth.mjs";
-import { spawnSync } from "node:child_process";
+import { spawnSync, execFile } from "node:child_process";
 import { decryptSensitiveFields, encryptSensitiveFields } from "../backend/cred-crypto.mjs";
 // 依赖判定只有一份（从 backend/package.json 推导），与 AppHost 侧（http/ui.js）共用
 import { missingBackendDeps } from "../backend/deps.mjs";
@@ -49,6 +49,12 @@ const LEGACY_DIR = process.argv[3] || "";
 process.env.HANAKO_PLUGIN_DATA = DATA_DIR;
 
 const PORT = Number(process.argv[4]) || 43179;
+
+// 诊断缓存：服务能不能 spawn、看不看得见 npm（依赖自愈的前提）。
+// 在 probeSpawn 里算一次，供 /health 报告 —— 不每次现查。
+let _spawnProbe = null;   // probeSpawn() 的结果对象
+let _npmRunner = null;    // findNpmRunner() 找到的 { node, cli, root } 或 null
+let _npmVersion = null;   // 真跑一次 npm --version 的输出（证明它不是“看起来在”而已）
 const READY_MARKER = "HANA_MAIL_SERVICE_READY";
 const MAX_HTTP_BYTES = 4 * 1024 * 1024;
 
@@ -70,14 +76,89 @@ function log(level, msg, data) {
   } catch { /* 日志失败不影响服务 */ }
 }
 
-// ── 依赖：服务不能 spawn，所以依赖必须随包发布 ──
+// ── 依赖：现在服务能自己补了 ──
 //
-// 原来这里跑 `npm install`（spawn）。但受管 native 运行时被 Job Object 管着，
-// **服务不能再 spawn 任何进程**（实测报 spawn EPERM），npm 永远跑不起来。
-// 因此改为：依赖随包发布（backend/node_modules 入包），这里只做检查与明确报错。
+// ⚠ 历史：这里原写的是「受管 native 运行时被 Job Object 管着，服务不能再 spawn 任何进程
+//   （实测报 spawn EPERM），npm 永远跑不起来 —— 因此依赖随包发布，这里只做检查」。
+//   **那条结论已过期。** 它是在服务跑 native profile 时测的；现在 native 永远建不起来
+//  （HANA_HOME 是符号链接），服务实际跑在降级后的 local-machine（enforcement: none），
+//   2026-09-22 实探可以 spawn（见 probeSpawn）。而 scripts/restore-backend-deps.mjs
+//  （09-20）说的「服务有能力 spawn + 出网」是对的。
+//
+// 于是这个暗坑真修掉了：更新 App 会把 backend/node_modules 整个清掉，
+// 以前只能让用户自己开终端跑 restore-backend-deps.mjs，现在服务自己补。
+//
+// 但仍以「依赖随包发布」为主：解压即用、不依赖网络与 npm。
+// 自愈是兜底，不是常规路径。
 //
 // 判定抽到 backend/deps.mjs —— AppHost 那一侧（http/ui.js）也要用同一份规则。
 // 起因：那边曾有两份硬编码清单，0.6.0 换依赖时没同步，把 QQ 邮箱的同步整条挡住了。
+
+/**
+ * 找一对能跑 npm 的 (node.exe, npm-cli.js)。
+ *
+ * 注意：服务自己的 `process.execPath` 是 **hana-server.exe**（宿主自带的 node，
+ * 旁边没有 npm）。拿它去跑 npm-cli.js 只会把参数当成服务启动参数 ——
+ * 所以必须凑齐一对，凑不齐宁可不装。
+ */
+function findNpmRunner() {
+  const exeDir = path.dirname(process.execPath);
+  const roots = [exeDir, path.join(exeDir, "..", "lib")];
+  for (const p of String(process.env.PATH || "").split(path.delimiter)) {
+    if (p) roots.push(p);
+  }
+  roots.push(path.join(process.env.ProgramFiles || "C:\\Program Files", "nodejs"));
+
+  for (const root of roots) {
+    for (const rel of ["node_modules/npm/bin/npm-cli.js", "lib/node_modules/npm/bin/npm-cli.js"]) {
+      try {
+        const cli = path.resolve(root, rel);
+        if (!fs.existsSync(cli)) continue;
+        const node = path.resolve(root, "node.exe");
+        if (!fs.existsSync(node)) continue;
+        return { node, cli, root: path.resolve(root) };
+      } catch { /* 继续找 */ }
+    }
+  }
+  return null;
+}
+
+/** 缺依赖时用 npm 补上。**必须异步**：spawnSync 会把 HTTP 事件循环一起堵死。 */
+function autoInstallDeps(missing) {
+  const runner = findNpmRunner();
+  if (!runner) {
+    log("WARN", "依赖自愈跳过：找不到配套的 node.exe + npm-cli.js", { missing });
+    return Promise.resolve(false);
+  }
+  // 这锁文件原本是给 AppHost 看的（它据此回 202「正在自动安装中」），一直没东西写它。
+  const lock = path.join(DATA_DIR, ".hanako-auto-install.lock");
+  try { fs.writeFileSync(lock, new Date().toISOString()); } catch { /* ignore */ }
+  log("INFO", "依赖缺失，开始后台自愈安装", { missing, node: runner.node, npmCli: runner.cli, cwd: BACKEND_DIR });
+  const t0 = Date.now();
+  return new Promise((resolve) => {
+    execFile(runner.node, [runner.cli, "install", "--omit=dev", "--no-audit", "--no-fund"], {
+      cwd: BACKEND_DIR,
+      encoding: "utf-8",
+      timeout: 180000,
+      windowsHide: true,
+      maxBuffer: 8 * 1024 * 1024,
+      env: { ...process.env, npm_config_update_notifier: "false", npm_config_fund: "false", npm_config_audit: "false" },
+    }, (err, stdout, stderr) => {
+      const still = missingBackendDeps(BACKEND_DIR);
+      const ok = !err && still.length === 0;
+      log(ok ? "INFO" : "ERROR", ok ? "依赖自愈完成" : "依赖自愈未成功", {
+        ms: Date.now() - t0,
+        stillMissing: still,
+        error: err ? { code: err.code, message: err.message } : null,
+        stdoutTail: String(stdout || "").trim().slice(-300),
+        stderrTail: String(stderr || "").trim().slice(-500),
+      });
+      try { fs.rmSync(lock, { force: true }); } catch { /* ignore */ }
+      resolve(ok);
+    });
+  });
+}
+
 function checkDeps() {
   return missingBackendDeps(BACKEND_DIR);
 }
@@ -114,18 +195,34 @@ function probeSpawn() {
   } catch (e) {
     out = { canSpawn: false, error: { code: e.code, message: e.message }, ms: Date.now() - t0 };
   }
+  _spawnProbe = out;
   log(out.canSpawn ? "INFO" : "WARN", "spawn 能力探针", out);
+
+  // 自愈的前提不只是“能 spawn”，还要“看得见 npm”。
+  // 服务自己的 execPath 是 hana-server.exe（旁边没有 npm），所以要靠 PATH 扫。
+  if (out.canSpawn) {
+    _npmRunner = findNpmRunner();
+    if (!_npmRunner) {
+      log("WARN", "npm 探针：找不到配套的 node.exe + npm-cli.js，依赖自愈将不可用");
+    } else {
+      try {
+        const v = spawnSync(_npmRunner.node, [_npmRunner.cli, "--version"], {
+          encoding: "utf-8", timeout: 30000, windowsHide: true,
+        });
+        _npmVersion = String(v.stdout || "").trim() || null;
+        log("INFO", "npm 探针", { root: _npmRunner.root, version: _npmVersion, status: v.status, err: v.error ? v.error.code : null });
+      } catch (e) {
+        log("WARN", "npm 探针异常", { error: e.message });
+      }
+    }
+  }
   return out.canSpawn;
 }
 
 function reportDeps() {
   const missing = checkDeps();
   if (missing.length === 0) { log("INFO", "后端依赖就绪"); return true; }
-  log("ERROR", "后端依赖缺失，邮件功能不可用", {
-    missing,
-    hint: "这些依赖应随安装包一并发布（backend/node_modules）。服务跑在受管 native "
-      + "运行时里，不能 spawn，所以无法自己 npm install。",
-  });
+  log("WARN", "后端依赖缺失", { missing, hint: "将尝试后台自愈安装（见 main()）" });
   return false;
 }
 
@@ -201,9 +298,13 @@ function rawRequest({ url, method = "POST", headers = {}, body = "", timeoutMs =
  * 图片代理。
  *
  * 以前这里是 execFile(_proxy-fetch.cjs) —— 在 AppHost 里没网、只能靠子进程。
- * 但现在服务跑在受管 native profile 里，**不能再 spawn**（Job Object 管住，
- * 实测报 spawn EPERM），而且也没必要：服务自己就有原生出站网络。
- * 于是改为进程内直连，保留原来那套 SSRF 加固：
+ *
+ * ⚠ 原文补的理由是「服务跑在受管 native profile 里不能再 spawn（Job Object，实测 EPERM）」
+ *   —— 那条结论**已过期**（现在服务跑降级后的 local-machine，实探可以 spawn；
+ *   唯一真相来源：本文件的 probeSpawn）。
+ *
+ * 进程内直连依旧是对的：服务自己就有原生出站网络，少一个进程、少一层 cmd.exe 解析面。
+ * 保留原来那套 SSRF 加固：
  *   · 仅 http/https
  *   · 屏蔽私网 / 回环（host 字符串 + DNS 解析后校验 IP，防 rebinding）
  *   · 限大小、限跳转、校验 content-type
@@ -270,9 +371,12 @@ async function proxyFetch(rawUrl) {
 
 // ── 桌面通知：写队列，由 AppHost 取走并派发 ──
 //
-// 服务不能 spawn（Job Object → EPERM），而 Windows 通知必须拉起一个进程。
-// AppHost 有 --allow-child-process，所以把“要发什么通知”写进文件，
-// 让 AppHost 定时来取（见 http/ui.js 的 drainNotifications）。
+// ⚠ 原写「服务不能 spawn（Job Object → EPERM），而 Windows 通知必须拉起一个进程」——
+//   那条结论**已过期**：现在服务跑在降级后的 local-machine，实探可以 spawn
+//  （唯一真相来源：本文件的 probeSpawn）。
+//
+// 但“写队列交给 AppHost”暂时保留：现链路是端到端验证过的，
+// 合并两半属于简化、不属于修复（详见 lib/notify-drain.mjs 头部）。
 function notifyDir() {
   const dir = path.join(DATA_DIR, "_pending_notify");
   try { fs.mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
@@ -643,7 +747,17 @@ async function handle(req, res) {
   // /health 不挑方法：桥（callService）总是 POST，手工排查时常 GET。
   // 只认 GET 会让桥拿到 404 —— 实测踩过。
   if (route === "/health") {
-    return send(res, 200, { ok: true, deps: checkDeps().length === 0, node: process.version, port: PORT });
+    return send(res, 200, {
+      ok: true,
+      deps: checkDeps().length === 0,
+      missing: checkDeps(),
+      node: process.version,
+      port: PORT,
+      // 诊断：依赖自愈的前提（能 spawn + 看得见 npm）。放 /health 而不是新端点 ——
+      // 回环本来就没鉴权，不再多一个可被本机进程触发的动作。
+      spawn: _spawnProbe,
+      npm: _npmRunner ? { root: _npmRunner.root, version: _npmVersion } : null,
+    });
   }
 
   if (req.method !== "POST") return send(res, 405, { ok: false, error: "method not allowed" });
@@ -738,12 +852,42 @@ async function main() {
 
   // 依赖检查不再阻塞就绪：缺失时 /cli 会报错，但服务本身要起来，
   // 这样 /health 与其它端点仍可用（也便于诊断）。
-  reportDeps();
+  const depsOk = reportDeps();
   // 启动时真测一次 spawn 能力（结论落在 service.log），见上面 probeSpawn 的注释。
   probeSpawn();
-  startListeners().catch((e) => log("ERROR", "监听启动失败", { error: e.message }));
 
-  await loadBackend();
+  if (depsOk) {
+    startListeners().catch((e) => log("ERROR", "监听启动失败", { error: e.message }));
+    await loadBackend();
+  } else {
+    // 缺依赖：**后台**自愈，装好了再加载后端。
+    // 这里绝不能阻塞 —— 服务必须立刻开始监听，否则 AppHost 在 15 秒就绪超时后会重试，
+    // 而一个还在 npm install 的服务进程会和第二个进程抢同一个 backend/node_modules。
+    //
+    // ★ 监听器也推到自愈之后：ws-monitor / imap-idle 一上来就 import 后端依赖
+    //   （@clawemail/node-sdk、imapflow），依赖没到位时启动必然失败 ——
+    //   实测就是“自愈 5 秒装完了，但两个监听器已经死在那里”，
+    //   而后端加载了、监听器没回来，从外面看依旧像“同步不工作”。
+    autoInstallDeps(checkDeps())
+      .then(async (ok) => {
+        if (!ok) {
+          log("ERROR", "依赖自愈未成功，邮件功能不可用", {
+            missing: checkDeps(),
+            hint: "正式安装下依赖随包发布（backend/node_modules），可重新安装本应用；"
+              + "开发目录可手动 `cd backend && npm install`。",
+          });
+          return;
+        }
+        startListeners().catch((e) => log("ERROR", "自愈后监听启动失败", { error: e.message }));
+        try {
+          await loadBackend();
+          log("INFO", "自愈后后端与监听器已启动");
+        } catch (e) {
+          log("ERROR", "自愈后加载后端失败", { error: e.message });
+        }
+      })
+      .catch((e) => log("ERROR", "后台自愈异常", { error: e.message }));
+  }
 
   const server = http.createServer((req, res) => {
     handle(req, res).catch((e) => { try { send(res, 500, { ok: false, error: e.message }); } catch { /* ignore */ } });

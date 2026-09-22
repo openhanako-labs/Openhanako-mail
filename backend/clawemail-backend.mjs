@@ -2,11 +2,16 @@
  * ClawEmail 后端 —— 全部走 @clawemail/node-sdk（进程内 HTTP）。
  *
  * 历史：文件夹列表 / 移动 / 标记 / 删除 曾用 `mail-cli` 子进程（SDK 当時没暴露这些）。
- * v0.3.2 起**全部改为进程内**，因为本模块跑在受管 native 服务里，
- * 而那个进程被 Job Object 管着、**不能再 spawn**（实测报 spawn EPERM）。
- * 好在 AjaxTransport 已经有这些方法，不必再绕路：
+ * v0.3.2 起**全部改为进程内**。
+ *
+ * ⚠ 当初的理由是「本模块跑在受管 native 服务里，那个进程被 Job Object 管着、不能再 spawn
+ *   （实测 spawn EPERM）」—— **那条结论已过期**：现在 native 永远建不起来
+ *   （HANA_HOME 是符号链接），服务实际跑在降级后的 local-machine（enforcement: none），
+ *   实探可以 spawn。唯一真相来源：runtime/service.mjs 的 probeSpawn。
+ *
+ * 进程内依旧是对的：AjaxTransport 已经有这些方法，不必再绕路：
  *   listFolders / listMessages / moveMessages / markMessages / getMessage / searchMessages
- * 顺带的好处：不再依赖邮件夹路径、不再有 cmd.exe 解析面。
+ * 顺带的好处也是真的：不再依赖邮件夹路径、不再有 cmd.exe 解析面。
  */
 
 import path from "node:path";

@@ -2,8 +2,14 @@
  * agentqq-auth.mjs — AgentQQ（腾讯邮件 Agent）OAuth 设备码授权 + REST 客户端。
  *
  * 为什么不用官方 CLI：`@tencent-qqmail/agently-cli` 是个 Go 原生二进制，
- * `run.js` 只是 execFileSync 它。而本应用的后端跑在受管 native 运行时里，
- * 那个进程被 Windows Job Object 管着、**不能再 spawn**（实测 EPERM）。
+ * `run.js` 只是 execFileSync 它。
+ *
+ * ⚠ 这里原写的是「受管运行时不能再 spawn（实测 EPERM）」—— **那条结论已过期**，
+ *   它是服务跑 native profile 时测的；现在 native 永远建不起来（HANA_HOME 是符号链接），
+ *   服务实际跑在降级后的 local-machine（enforcement: none），实探**可以** spawn。
+ *   唯一真相来源：runtime/service.mjs 的 probeSpawn（启动时真跑一次，结果进 service.log）。
+ *
+ * 不过直连 REST 依旧更省：不用装全局 CLI、不用管子进程生命周期。
  * 好消息：CLI 打的只是普通 REST，服务自己就有网络，所以直连即可 ——
  * 连 `npm install -g` 都不需要了。
  *
