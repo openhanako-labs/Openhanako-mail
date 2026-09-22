@@ -404,6 +404,18 @@ for (const [i, card] of (manifest.contributes?.cards || []).entries()) {
   //   _profile 被 serviceProfile() 读走，而卡片的降级提示靠它判是否显示。
   check("★ 实际生效的 profile 会写回 _profile（否则降级提示永远不显示）",
     /_profile\s*=\s*rec\?\.profile\s*\|\|\s*profile/.test(rtHost));
+
+  // ★ 服务进程死掉后要能自愈。
+  //   以前 `_state` 只在 doStart() 内部被写，进程死时没人改它，
+  //   于是 doStart 的 `if (_state === "ready") return true` 永远短路，
+  //   而 fetch 报错也不改 _state —— 每 60 秒重复一句 poll fail，永远。
+  check("★ 服务已不在时会作废就绪状态并就地补一次（callService 自愈）",
+    /isRuntimeGoneError/.test(rtHost) && /markRuntimeGone/.test(rtHost)
+    && /if \(!\(await doStart\(\)\)\) return \{ ok: false, error: msg \}/.test(rtHost));
+
+  // 死代码哨兵：合并后曾留下一个没人调用的 startWith
+  check("★ 没有 orphan 的 startWith 启动包装",
+    !/const startWith = \(profile\)/.test(rtHost));
 }
 
 dispose();

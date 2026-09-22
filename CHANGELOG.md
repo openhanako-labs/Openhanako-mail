@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.6.10] — 2026-09-22
+
+### 修复：服务进程死掉后，没人拉它起来
+
+0.6.9 测试时踩到的：杀掉邮件服务进程后，AppHost 每 60 秒报一次
+
+```
+hanako-mail poll fail: Managed runtime "a3a1dd5f-..." does not have a ready service.
+```
+
+**却从不重启它**；`disable` / `enable` 也不会重载 App。服务就一直停在那里。
+
+机理是一个“自我一致的盲目”：
+
+- `_state` 只在 `doStart()` 内部被写（`_state = ok ? "ready" : "failed"`）；
+- 服务进程死掉时**没有任何代码改它**；
+- 于是 `doStart()` 开头的 `if (_state === "ready" && _runtimeId) return true;` 永远短路；
+- 每次调用直接 `runtime.fetch` → 拿到 “does not have a ready service” → 报错；
+- 而报错也不改 `_state` → 下一次一模一样。
+
+修：新增 `isRuntimeGoneError()` 识别这类错误，`markRuntimeGone()` 作废就绪状态
+（同时清 `_lastFailureAt`，让重启不被冷却挡住），`callService` 就地补一次；
+补不上才把错误交给调用方。
+
+> 这个洞从外面看很难受：卡片照常打开、列表照常显示（读的是**磁盘缓存**，
+> 不经过服务），所以它**看起来还活着**，只是数据冻住了；通知没了、同步没了。
+> 唯一的痕迹就是日志里那句 poll fail。
+> 而 0.6.9 的自愈只在 App 启动时触发 —— 所以在此之前，“服务崩了”唯一的恢复方式是重启整个 Hana。
+
+### 顺带清掉合并带进来的死代码
+
+`lib/runtime-host.mjs` 里的 `startWith(profile)`：合并取上游 `RUNTIME_PROFILES` 循环版后
+它没人调用了（循环里直接 `_ctx.runtime.start`），留着会让人以为还有第二条启动路径。
+
+`smoke-load` 相应加两条哨兵（自愈逻辑在 / 没有 orphan 的 startWith）。
+
 ## [0.6.9] — 2026-09-22
 
 ### 新增：服务自己补依赖（那个“让用户开终端跑脚本”的暗坑）
