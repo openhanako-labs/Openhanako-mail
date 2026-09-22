@@ -399,6 +399,11 @@ for (const [i, card] of (manifest.contributes?.cards || []).entries()) {
     !/node_modules"\s*,\s*"imap"/.test(uiSrc));
   check("★ AppHost 侧与运行时共用同一份依赖判定",
     /missingBackendDeps/.test(uiSrc) && /missingBackendDeps/.test(svcSrc));
+
+  // ★ 声明了却从不赋值 —— 这种烂法编译器和 node --check 都看不见。
+  //   _profile 被 serviceProfile() 读走，而卡片的降级提示靠它判是否显示。
+  check("★ 实际生效的 profile 会写回 _profile（否则降级提示永远不显示）",
+    /_profile\s*=\s*rec\?\.profile\s*\|\|\s*profile/.test(rtHost));
 }
 
 dispose();

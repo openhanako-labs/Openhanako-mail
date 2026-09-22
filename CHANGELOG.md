@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.6.7] — 2026-09-22
+
+### 修复：降级到无沙箱 profile 的提示永远不显示（上游遗留的一行）
+
+合并上游 `b23abcb`（把降级链重写成 `RUNTIME_PROFILES` 数组循环）后发现：
+`lib/runtime-host.mjs` 里 `_profile` **声明了但从未赋值**：
+
+```js
+let _profile = ""; // 实际生效的 profile：native 失败时会降级到 local-machine
+export function serviceProfile() { return _profile; }
+```
+
+而 `serviceProfile()` 有三处消费者，其中一处很关键：
+
+```js
+// ui/mail.html:957
+if (d.serviceProfile && d.serviceProfile !== 'native') parts.push('运行 profile：' + d.serviceProfile);
+```
+
+也就是说 **卡片本来会在设置里提示“你的服务正跑在降级 profile 上（原 0 无文件沙箱）”**，
+但 `_profile` 恒为空 → 那个提示永远不出现。一个安全相关的降级提示被静默吞掉了。
+
+修：成功路径写回 `_profile = rec?.profile || profile`；
+全部 profile 都失败时复位为 `""`，不再报上一个尝试过的 profile。
+
+> 这种“声明了却从不赋值”编译器与 `node --check` 都看不见 ——
+> 因此 `scripts/smoke-load.mjs` 加了一条静态哨兵盯住这一行。
+
 ## [0.6.6] — 2026-09-22
 
 ### 修复：QQ 邮箱同步被一条化石提示挡住
