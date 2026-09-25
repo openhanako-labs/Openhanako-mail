@@ -44,6 +44,40 @@ function ensureDir(p) {
   try { fs.mkdirSync(p, { recursive: true }); } catch {}
 }
 
+// ── _pending_notify 孤儿清理 ────────────────────────────────────────────
+// 起因：派发失败或 App 重启中断时，队列没有 TTL 清理。
+// 2026-09-25 实测：32 个通知从 2026-07-26 起从未被 ack，永远留在磁盘上。
+// 判据：超过 7 天未被 ack 的通知视为孤儿。7 天足够长——正常链路 5 秒一轮，
+// 即使 App 挂了三天、toast 助手卡了三天，也不该有通知活到 7 天还没派发。
+const NOTIFY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const NOTIFY_PRUNE_INTERVAL_MS = 5 * 60 * 1000; // 5 分钟节流
+let _lastNotifyPrune = 0;
+
+export function prunePendingNotify() {
+  const dir = path.join(getDataDir(), "_pending_notify");
+  let names;
+  try { names = fs.readdirSync(dir); } catch { return { removed: 0 }; }
+  const cutoff = Date.now() - NOTIFY_MAX_AGE_MS;
+  let removed = 0;
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    const full = path.join(dir, name);
+    let st;
+    try { st = fs.statSync(full); } catch { continue; }
+    if (st.mtimeMs >= cutoff) continue;
+    try { fs.unlinkSync(full); removed++; } catch { /* ignore */ }
+  }
+  return { removed };
+}
+
+/** 5 分钟节流；只在有新通知要写时才跑，App 长期不活跃时不白扫。 */
+function maybePrunePendingNotify() {
+  const now = Date.now();
+  if (now - _lastNotifyPrune < NOTIFY_PRUNE_INTERVAL_MS) return;
+  _lastNotifyPrune = now;
+  try { prunePendingNotify(); } catch { /* ignore */ }
+}
+
 // ── cache/ws-*.json 清理 ────────────────────────────────────────────────
 // 每封实时收到的邮件都会在 cache/ 落一个 ws-<accountId>-<mailId>.json（含正文全文），
 // 原来**没有任何清理机制** —— 2026-09-22 实测 62 个文件 / 1.65 MB，随收信量线性增长，
@@ -140,6 +174,7 @@ function saveProcessed(accountId, set) {
 // 但“写队列交给 AppHost”这个形态**暂时保留**：现链路是端到端验证过的，
 // 而合并两半属于简化、不属于修复（详见 lib/notify-drain.mjs 头部）。
 function notifyDesktop(subject, sender, messageId, accountId) {
+  maybePrunePendingNotify();
   try {
     const dir = path.join(getDataDir(), "_pending_notify");
     fs.mkdirSync(dir, { recursive: true });
